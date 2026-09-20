@@ -1,8 +1,15 @@
 import { ProtocolStore } from "../protocol/store.js";
 import { assistantText } from "../protocol/events.js";
 import { reduceEvents } from "../protocol/state.js";
-import { completedNotification, completionSummary } from "../protocol/completion.js";
-import type { WorkerCommand, WorkerEvent, WorkerResult } from "../protocol/types.js";
+import {
+  completedNotification,
+  completionSummary,
+} from "../protocol/completion.js";
+import type {
+  WorkerCommand,
+  WorkerEvent,
+  WorkerResult,
+} from "../protocol/types.js";
 import { RpcClient } from "./rpc-client.js";
 import { renderRpcEvent } from "./renderer.js";
 import type { WorkerId } from "../types.js";
@@ -28,7 +35,10 @@ export class Runner {
   private readonly id: WorkerId;
   private rpc!: RpcClient;
 
-  constructor(private readonly runDir: string, private readonly options: RunnerOptions = {}) {
+  constructor(
+    private readonly runDir: string,
+    private readonly options: RunnerOptions = {},
+  ) {
     const parts = runDir.split(/[\\/]/);
     this.id = parts[parts.length - 1] as WorkerId;
     this.store = new ProtocolStore(parts.slice(0, -1).join("/") || "/");
@@ -47,12 +57,15 @@ export class Runner {
         : [];
 
     const launchArgs = [
-      "--mode", "rpc",
+      "--mode",
+      "rpc",
       ...(meta.launch.provider ? ["--provider", meta.launch.provider] : []),
       ...(meta.launch.model ? ["--model", meta.launch.model] : []),
       ...(meta.launch.thinking ? ["--thinking", meta.launch.thinking] : []),
       ...(meta.launch.name ? ["--name", meta.launch.name] : []),
-      ...(meta.launch.systemPrompt ? ["--system-prompt", meta.launch.systemPrompt] : []),
+      ...(meta.launch.systemPrompt
+        ? ["--system-prompt", meta.launch.systemPrompt]
+        : []),
       ...(meta.launch.tools ? ["--tools", meta.launch.tools.join(",")] : []),
       ...sessionArgs,
       ...(meta.launch.rpcArgs ?? []),
@@ -65,17 +78,31 @@ export class Runner {
       args: [...baseArgs, ...launchArgs],
     });
 
-    meta = { ...meta, runnerPid: process.pid, heartbeatAt: new Date().toISOString() };
+    meta = {
+      ...meta,
+      runnerPid: process.pid,
+      heartbeatAt: new Date().toISOString(),
+    };
     await this.store.writeMeta(meta);
 
-    this.rpc.on("stderr", (text) => { void this.store.appendRunnerLog(this.id, String(text)); });
-    this.rpc.on("event", (event) => { void this.onRpc(event); });
-    this.rpc.on("error", (error) => { void this.fail(error); });
-    this.rpc.on("exit", (data) => { if (!this.stopped) void this.fail(data); });
+    this.rpc.on("stderr", (text) => {
+      void this.store.appendRunnerLog(this.id, String(text));
+    });
+    this.rpc.on("event", (event) => {
+      void this.onRpc(event);
+    });
+    this.rpc.on("error", (error) => {
+      void this.fail(error);
+    });
+    this.rpc.on("exit", (data) => {
+      if (!this.stopped) void this.fail(data);
+    });
     this.rpc.start();
 
     if (meta.launch.thinking) {
-      await this.rpc.setThinkingLevel(meta.launch.thinking).catch(() => undefined);
+      await this.rpc
+        .setThinkingLevel(meta.launch.thinking)
+        .catch(() => undefined);
     }
 
     const rpcState = await this.rpc.getState().catch(() => undefined);
@@ -83,12 +110,28 @@ export class Runner {
     const piSessionFile = stateData?.sessionFile ?? meta.piSessionFile;
     const piSessionId = stateData?.sessionId ?? meta.piSessionId;
     const activeModel = {
-      ...(stateData?.model?.provider ? { provider: String(stateData.model.provider) } : meta.launch.provider ? { provider: meta.launch.provider } : {}),
-      ...(stateData?.model?.id ? { model: String(stateData.model.id) } : meta.launch.model ? { model: meta.launch.model } : {}),
-      ...(stateData?.thinkingLevel ? { thinking: String(stateData.thinkingLevel) } : meta.launch.thinking ? { thinking: meta.launch.thinking } : {}),
+      ...(stateData?.model?.provider
+        ? { provider: String(stateData.model.provider) }
+        : meta.launch.provider
+          ? { provider: meta.launch.provider }
+          : {}),
+      ...(stateData?.model?.id
+        ? { model: String(stateData.model.id) }
+        : meta.launch.model
+          ? { model: meta.launch.model }
+          : {}),
+      ...(stateData?.thinkingLevel
+        ? { thinking: String(stateData.thinkingLevel) }
+        : meta.launch.thinking
+          ? { thinking: meta.launch.thinking }
+          : {}),
     };
 
-    if (meta.piSessionFile && stateData?.sessionFile && stateData.sessionFile !== meta.piSessionFile) {
+    if (
+      meta.piSessionFile &&
+      stateData?.sessionFile &&
+      stateData.sessionFile !== meta.piSessionFile
+    ) {
       await this.rpc.switchSession(meta.piSessionFile).catch(() => undefined);
     }
 
@@ -104,11 +147,15 @@ export class Runner {
     await this.store.writeMeta(meta);
 
     await this.record({ type: "rpc_started", data: { piPid: this.rpc.pid } });
-    this.heartbeat = setInterval(() => { void this.touch(); }, this.options.heartbeatMs ?? 2_000);
+    this.heartbeat = setInterval(() => {
+      void this.touch();
+    }, this.options.heartbeatMs ?? 2_000);
 
     while (!this.stopped) {
       await this.consume();
-      await new Promise((resolve) => setTimeout(resolve, this.options.pollMs ?? 100));
+      await new Promise((resolve) =>
+        setTimeout(resolve, this.options.pollMs ?? 100),
+      );
     }
     if (this.heartbeat) clearInterval(this.heartbeat);
   }
@@ -124,7 +171,11 @@ export class Runner {
   }
 
   async consume(): Promise<void> {
-    const commands = await this.store.readLog<WorkerCommand>(this.id, "commands", this.lastProcessedCommandSeq + 1);
+    const commands = await this.store.readLog<WorkerCommand>(
+      this.id,
+      "commands",
+      this.lastProcessedCommandSeq + 1,
+    );
     for (const command of commands) {
       if (command.seq > this.lastProcessedCommandSeq) {
         await this.execute(command);
@@ -136,7 +187,8 @@ export class Runner {
   private async execute(command: WorkerCommand): Promise<void> {
     this.activeCommandSeq = command.seq;
     if (command.type === "prompt") await this.rpc.prompt(command.text);
-    else if (command.type === "send") await this.rpc.prompt(command.text, "followUp");
+    else if (command.type === "send")
+      await this.rpc.prompt(command.text, "followUp");
     else if (command.type === "steer") await this.rpc.steer(command.text);
     else if (command.type === "abort") await this.rpc.abort();
     else if (command.type === "stop") {
@@ -153,11 +205,13 @@ export class Runner {
     if (display) (this.options.output ?? process.stdout).write(display);
 
     if (event.type === "extension_ui_request" && event.id) {
-      await this.rpc.send({
-        type: "extension_ui_response",
-        id: event.id,
-        cancelled: true,
-      }).catch(() => undefined);
+      await this.rpc
+        .send({
+          type: "extension_ui_response",
+          id: event.id,
+          cancelled: true,
+        })
+        .catch(() => undefined);
     }
 
     if (event.type === "agent_start") {
@@ -178,20 +232,27 @@ export class Runner {
     await this.record({
       type: event.type,
       data: event,
-      ...(this.activeCommandSeq !== undefined ? { commandSeq: this.activeCommandSeq } : {}),
+      ...(this.activeCommandSeq !== undefined
+        ? { commandSeq: this.activeCommandSeq }
+        : {}),
     });
 
     if (event.type === "agent_settled") {
       const state = await this.store.readState(this.id);
       const meta = await this.store.readMeta(this.id);
-      const workspace = meta.workspace?.mode === "worktree"
-        ? await new WorktreeAdapter().inspect(meta.workspace).catch(() => meta.workspace)
-        : meta.workspace;
+      const workspace =
+        meta.workspace?.mode === "worktree"
+          ? await new WorktreeAdapter()
+              .inspect(meta.workspace)
+              .catch(() => meta.workspace)
+          : meta.workspace;
       const result: WorkerResult = {
         version: 1,
         id: this.id,
         turn: this.currentTurn,
-        ...(this.activeCommandSeq !== undefined ? { commandSeq: this.activeCommandSeq } : {}),
+        ...(this.activeCommandSeq !== undefined
+          ? { commandSeq: this.activeCommandSeq }
+          : {}),
         text: this.turnText,
         completedAt: new Date().toISOString(),
         resultSeq: state.lastEventSeq,
@@ -204,7 +265,9 @@ export class Runner {
     }
   }
 
-  private record(value: Omit<WorkerEvent, "version" | "seq" | "at">): Promise<void> {
+  private record(
+    value: Omit<WorkerEvent, "version" | "seq" | "at">,
+  ): Promise<void> {
     const operation = this.recordQueue.then(async () => {
       const event = await this.store.appendEvent(this.id, value);
       const current = await this.store.readState(this.id);
@@ -222,7 +285,9 @@ export class Runner {
       version: 1,
       id: this.id,
       turn: state.turn,
-      ...(this.activeCommandSeq !== undefined ? { commandSeq: this.activeCommandSeq } : {}),
+      ...(this.activeCommandSeq !== undefined
+        ? { commandSeq: this.activeCommandSeq }
+        : {}),
       resultSeq: state.lastEventSeq,
       status: "failed",
       summary: completionSummary(message || "Worker failed."),

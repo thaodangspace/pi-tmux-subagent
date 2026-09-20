@@ -23,19 +23,30 @@ function truncateUtf8(value: string, maximum: number): string {
  * explicit final-output summary; otherwise the complete assistant text is
  * whitespace-normalized and deterministically truncated.
  */
-export function completionSummary(assistantText: string, explicitSummary?: string): string {
-  const candidate = (explicitSummary?.trim() || assistantText.trim() || "Completed without a text response.")
-    .replace(/\s+/g, " ");
+export function completionSummary(
+  assistantText: string,
+  explicitSummary?: string,
+): string {
+  const candidate = (
+    explicitSummary?.trim() ||
+    assistantText.trim() ||
+    "Completed without a text response."
+  ).replace(/\s+/g, " ");
   return truncateUtf8(candidate, MAX_COMPLETION_SUMMARY_BYTES);
 }
 
-export function completedNotification(result: WorkerResult, explicitSummary?: string): WorkerCompletion {
+export function completedNotification(
+  result: WorkerResult,
+  explicitSummary?: string,
+): WorkerCompletion {
   const summary = completionSummary(result.text, explicitSummary);
   return {
     version: 1,
     id: result.id,
     turn: result.turn,
-    ...(result.commandSeq !== undefined ? { commandSeq: result.commandSeq } : {}),
+    ...(result.commandSeq !== undefined
+      ? { commandSeq: result.commandSeq }
+      : {}),
     resultSeq: result.resultSeq ?? result.eventSeq,
     status: "completed",
     summary,

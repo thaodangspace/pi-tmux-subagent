@@ -6,7 +6,15 @@ import { TmuxAdapter } from "../tmux/adapter.js";
 import { workerId } from "../types.js";
 
 const TERMINAL = new Set(["completed", "failed", "stopped", "orphaned"]);
-function alive(pid?: number): boolean { if (!pid) return false; try { process.kill(pid, 0); return true; } catch { return false; } }
+function alive(pid?: number): boolean {
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export interface RecoveryOptions {
   staleMs?: number;
@@ -33,9 +41,21 @@ export class Recovery {
   }
 
   async scan(): Promise<WorkerState[]> {
-    let ids: string[]; try { ids = await readdir(this.store.root); } catch (error: any) { if (error.code === "ENOENT") return []; throw error; }
-    const states = await Promise.all(ids.filter((id) => /^[a-z0-9][a-z0-9-]{2,47}$/.test(id)).map((id) => this.recover(id).catch(() => undefined)));
-    return states.filter((x): x is WorkerState => Boolean(x)).sort((a, b) => a.id.localeCompare(b.id));
+    let ids: string[];
+    try {
+      ids = await readdir(this.store.root);
+    } catch (error: any) {
+      if (error.code === "ENOENT") return [];
+      throw error;
+    }
+    const states = await Promise.all(
+      ids
+        .filter((id) => /^[a-z0-9][a-z0-9-]{2,47}$/.test(id))
+        .map((id) => this.recover(id).catch(() => undefined)),
+    );
+    return states
+      .filter((x): x is WorkerState => Boolean(x))
+      .sort((a, b) => a.id.localeCompare(b.id));
   }
 
   async recover(value: string): Promise<WorkerState> {
@@ -45,23 +65,46 @@ export class Recovery {
       this.store.readState(id),
       this.store.readLog<WorkerEvent>(id, "events"),
     ]);
-    let state = reduceEvents({ version: 1, id, status: "starting", turn: 0, lastCommandSeq: 0, lastEventSeq: 0 }, events);
+    let state = reduceEvents(
+      {
+        version: 1,
+        id,
+        status: "starting",
+        turn: 0,
+        lastCommandSeq: 0,
+        lastEventSeq: 0,
+      },
+      events,
+    );
 
     const isStarting = state.status === "starting";
-    const startupGraceActive = isStarting && meta.createdAt
-      ? (!Number.isNaN(Date.parse(meta.createdAt)) && (Date.now() - Date.parse(meta.createdAt) <= this.startupGraceMs))
-      : false;
+    const startupGraceActive =
+      isStarting && meta.createdAt
+        ? !Number.isNaN(Date.parse(meta.createdAt)) &&
+          Date.now() - Date.parse(meta.createdAt) <= this.startupGraceMs
+        : false;
 
     if (!TERMINAL.has(state.status) && !startupGraceActive) {
-      const fresh = meta.heartbeatAt ? Date.now() - Date.parse(meta.heartbeatAt) <= this.staleMs : false;
+      const fresh = meta.heartbeatAt
+        ? Date.now() - Date.parse(meta.heartbeatAt) <= this.staleMs
+        : false;
       const session = await this.tmux.exists(id).catch(() => false);
       if (!fresh || !session || !alive(meta.runnerPid) || !alive(meta.piPid)) {
-        const reasons = { session, heartbeatFresh: fresh, runnerAlive: alive(meta.runnerPid), piAlive: alive(meta.piPid) };
-        const event = await this.store.appendEvent(id, { type: "orphaned", data: reasons });
+        const reasons = {
+          session,
+          heartbeatFresh: fresh,
+          runnerAlive: alive(meta.runnerPid),
+          piAlive: alive(meta.piPid),
+        };
+        const event = await this.store.appendEvent(id, {
+          type: "orphaned",
+          data: reasons,
+        });
         state = reduceEvents(state, [event]);
       }
     }
-    if (JSON.stringify(state) !== JSON.stringify(cached)) await this.store.writeState(state);
+    if (JSON.stringify(state) !== JSON.stringify(cached))
+      await this.store.writeState(state);
     return state;
   }
 }

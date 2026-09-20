@@ -3,10 +3,23 @@
   "version": "0.1.0",
   "description": "Durable Pi RPC workers supervised by tmux",
   "type": "module",
-  "bin": { "pi-tmux-subagent": "dist/cli.js" },
-  "exports": { ".": "./dist/index.js", "./extension": "./dist/extension/index.js" },
-  "files": ["dist", "README.md", "AGENTS.md"],
-  "pi": { "extensions": ["./dist/extension/index.js"] },
+  "bin": {
+    "pi-tmux-subagent": "dist/cli.js"
+  },
+  "exports": {
+    ".": "./dist/index.js",
+    "./extension": "./dist/extension/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "AGENTS.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./dist/extension/index.js"
+    ]
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
@@ -17,7 +30,9 @@
     "format": "prettier --write .",
     "check": "npm run lint && npm run typecheck && npm test && npm run build"
   },
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
     "@earendil-works/pi-ai": "^0.86.0",
     "@earendil-works/pi-coding-agent": "^0.86.0",

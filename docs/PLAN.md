@@ -265,7 +265,7 @@ Example:
 ### Event log
 
 ```json
-{"seq":21,"type":"command_ack","commandSeq":2}
+{ "seq": 21, "type": "command_ack", "commandSeq": 2 }
 ```
 
 ### Storage rules
@@ -361,7 +361,7 @@ subagent({
   action: "spawn",
   name: "auth-scout",
   task: "Inspect authentication implementation",
-  agent: "scout"
+  agent: "scout",
 });
 ```
 
@@ -371,7 +371,7 @@ Steer:
 subagent({
   action: "steer",
   id: "a31fc2",
-  message: "Check refresh token handling too"
+  message: "Check refresh token handling too",
 });
 ```
 
@@ -380,7 +380,7 @@ Status:
 ```ts
 subagent({
   action: "status",
-  id: "a31fc2"
+  id: "a31fc2",
 });
 ```
 
@@ -415,7 +415,6 @@ model: ...
 thinking: low
 tools: read,grep,find,bash
 ---
-
 Explore the assigned problem.
 Return concise findings.
 ```

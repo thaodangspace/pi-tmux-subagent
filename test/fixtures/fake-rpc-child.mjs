@@ -31,7 +31,10 @@ if (sessionFile) {
 function persistSession() {
   if (sessionFile) {
     try {
-      writeFileSync(sessionFile, JSON.stringify({ count, memory, thinkingLevel }));
+      writeFileSync(
+        sessionFile,
+        JSON.stringify({ count, memory, thinkingLevel }),
+      );
     } catch {
       // Ignore write errors in mock
     }
@@ -42,7 +45,10 @@ const send = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
 
 let pendingDialogResolver = null;
 
-const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+const rl = readline.createInterface({
+  input: process.stdin,
+  crlfDelay: Infinity,
+});
 
 rl.on("line", async (line) => {
   if (!line.trim()) return;
@@ -57,13 +63,25 @@ rl.on("line", async (line) => {
   }
 
   if (["prompt", "steer", "follow_up"].includes(command.type)) {
-    send({ type: "response", id: command.id, command: command.type, success: true });
+    send({
+      type: "response",
+      id: command.id,
+      command: command.type,
+      success: true,
+    });
     send({ type: "agent_start" });
 
     // Check if dialog test triggered
     if (command.message && command.message.includes("trigger_dialog")) {
-      send({ type: "extension_ui_request", id: "dialog-1", method: "confirm", message: "Confirm action?" });
-      await new Promise((resolve) => { pendingDialogResolver = resolve; });
+      send({
+        type: "extension_ui_request",
+        id: "dialog-1",
+        method: "confirm",
+        message: "Confirm action?",
+      });
+      await new Promise((resolve) => {
+        pendingDialogResolver = resolve;
+      });
     }
 
     if (command.message && command.message.startsWith("remember:")) {
@@ -80,8 +98,14 @@ rl.on("line", async (line) => {
     persistSession();
 
     // High frequency streaming update
-    send({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: text } });
-    send({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text }] } });
+    send({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", delta: text },
+    });
+    send({
+      type: "message_end",
+      message: { role: "assistant", content: [{ type: "text", text }] },
+    });
     send({ type: "agent_settled" });
   } else if (command.type === "get_state") {
     send({
@@ -98,7 +122,12 @@ rl.on("line", async (line) => {
   } else if (command.type === "set_thinking_level") {
     thinkingLevel = command.level;
     persistSession();
-    send({ type: "response", id: command.id, command: "set_thinking_level", success: true });
+    send({
+      type: "response",
+      id: command.id,
+      command: "set_thinking_level",
+      success: true,
+    });
   } else if (command.type === "switch_session") {
     sessionFile = command.sessionPath;
     if (sessionFile) {
@@ -109,10 +138,21 @@ rl.on("line", async (line) => {
         memory = data.memory ?? memory;
       } catch {}
     }
-    send({ type: "response", id: command.id, command: "switch_session", success: true, data: { cancelled: false } });
+    send({
+      type: "response",
+      id: command.id,
+      command: "switch_session",
+      success: true,
+      data: { cancelled: false },
+    });
   } else if (command.type === "abort") {
     send({ type: "response", id: command.id, command: "abort", success: true });
   } else {
-    send({ type: "response", id: command.id, command: command.type, success: true });
+    send({
+      type: "response",
+      id: command.id,
+      command: command.type,
+      success: true,
+    });
   }
 });

@@ -20,26 +20,44 @@ async function fixture() {
       cwd: root,
       launch: { task: "x" },
     },
-    { version: 1, id, status: "starting", turn: 0, lastCommandSeq: 0, lastEventSeq: 0 },
+    {
+      version: 1,
+      id,
+      status: "starting",
+      turn: 0,
+      lastCommandSeq: 0,
+      lastEventSeq: 0,
+    },
   );
   return { store, id };
 }
 
 afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  await Promise.all(
+    roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
+  );
 });
 
 describe("protocol store", () => {
   it("serializes concurrent monotonic appends", async () => {
     const { store, id } = await fixture();
-    await Promise.all(Array.from({ length: 10 }, (_, i) => store.appendCommand(id, { type: "send", text: String(i) })));
-    expect((await store.readLog(id, "commands")).map((x) => x.seq)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    await Promise.all(
+      Array.from({ length: 10 }, (_, i) =>
+        store.appendCommand(id, { type: "send", text: String(i) }),
+      ),
+    );
+    expect((await store.readLog(id, "commands")).map((x) => x.seq)).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+    ]);
   });
 
   it("ignores only an incomplete final record when reading", async () => {
     const { store, id } = await fixture();
     await store.appendEvent(id, { type: "ok" });
-    await writeFile(store.path(id, "events.jsonl"), '{"version":1,"seq":1}\n{"seq":');
+    await writeFile(
+      store.path(id, "events.jsonl"),
+      '{"version":1,"seq":1}\n{"seq":',
+    );
     expect(await store.readLog(id, "events")).toHaveLength(1);
     await writeFile(store.path(id, "events.jsonl"), "{bad}\n");
     await expect(store.readLog(id, "events")).rejects.toThrow(/Invalid events/);
@@ -48,7 +66,10 @@ describe("protocol store", () => {
   it("repairs incomplete JSONL tails before appending next record with contiguous sequences", async () => {
     const { store, id } = await fixture();
     // 1. Write a valid record
-    const first = await store.appendCommand(id, { type: "prompt", text: "first" });
+    const first = await store.appendCommand(id, {
+      type: "prompt",
+      text: "first",
+    });
     expect(first.seq).toBe(1);
 
     // 2. Simulate a partial tail (e.g. process crashed mid-write)
@@ -57,7 +78,10 @@ describe("protocol store", () => {
     await writeFile(logPath, `${validContent}{"version":1,"seq":2,"text":"par`);
 
     // 3. Append a new record
-    const second = await store.appendCommand(id, { type: "send", text: "second" });
+    const second = await store.appendCommand(id, {
+      type: "send",
+      text: "second",
+    });
     expect(second.seq).toBe(2);
 
     // 4. Read the log successfully with contiguous sequence numbers
@@ -72,7 +96,10 @@ describe("protocol store", () => {
     const { store, id } = await fixture();
     const logPath = store.path(id, "commands.jsonl");
     await writeFile(logPath, '{"version":1,"incomp');
-    const first = await store.appendCommand(id, { type: "prompt", text: "fresh" });
+    const first = await store.appendCommand(id, {
+      type: "prompt",
+      text: "fresh",
+    });
     expect(first.seq).toBe(1);
     const commands = await store.readLog<any>(id, "commands");
     expect(commands).toHaveLength(1);
@@ -82,16 +109,34 @@ describe("protocol store", () => {
   it("durably reads completed and failed notifications after restart", async () => {
     const { store, id } = await fixture();
     await store.writeCompletion({
-      version: 1, id, turn: 1, commandSeq: 1, resultSeq: 7,
-      status: "completed", summary: "done", hasDetails: true, completedAt: "2026-01-01T00:00:00Z",
+      version: 1,
+      id,
+      turn: 1,
+      commandSeq: 1,
+      resultSeq: 7,
+      status: "completed",
+      summary: "done",
+      hasDetails: true,
+      completedAt: "2026-01-01T00:00:00Z",
     });
-    expect(await new ProtocolStore(store.root).readCompletion(id)).toMatchObject({ status: "completed", resultSeq: 7 });
+    expect(
+      await new ProtocolStore(store.root).readCompletion(id),
+    ).toMatchObject({ status: "completed", resultSeq: 7 });
 
     await store.writeCompletion({
-      version: 1, id, turn: 2, commandSeq: 2, resultSeq: 9,
-      status: "failed", summary: "RPC exited", hasDetails: false, completedAt: "2026-01-01T00:01:00Z",
+      version: 1,
+      id,
+      turn: 2,
+      commandSeq: 2,
+      resultSeq: 9,
+      status: "failed",
+      summary: "RPC exited",
+      hasDetails: false,
+      completedAt: "2026-01-01T00:01:00Z",
     });
-    expect(await new ProtocolStore(store.root).readCompletion(id)).toMatchObject({ status: "failed", summary: "RPC exited", resultSeq: 9 });
+    expect(
+      await new ProtocolStore(store.root).readCompletion(id),
+    ).toMatchObject({ status: "failed", summary: "RPC exited", resultSeq: 9 });
   });
 
   it("supports reading log with fromSeq cursor", async () => {

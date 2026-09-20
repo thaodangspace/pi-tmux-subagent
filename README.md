@@ -83,7 +83,11 @@ To restrict workers to approved provider/model pairs, add `.pi/agent/sub-agents.
 ```json
 {
   "models": [
-    { "provider": "anthropic", "model": "claude-sonnet-4-5", "thinking": "high" },
+    {
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-5",
+      "thinking": "high"
+    },
     { "provider": "openai-codex", "model": "gpt-5.6-sol", "thinking": "low" }
   ],
   "default": { "provider": "openai-codex", "model": "gpt-5.6-sol" }

@@ -21,7 +21,10 @@ afterEach(async () => {
   }
 });
 
-async function waitFor<T>(fn: () => Promise<T | undefined>, timeout = 10000): Promise<T> {
+async function waitFor<T>(
+  fn: () => Promise<T | undefined>,
+  timeout = 10000,
+): Promise<T> {
   const end = Date.now() + timeout;
   while (Date.now() < end) {
     const value = await fn();
@@ -45,18 +48,31 @@ describe("durable lifecycle", () => {
         cwd: root,
         launch: { task: "first" },
       },
-      { version: 1, id, status: "starting", turn: 0, lastCommandSeq: 0, lastEventSeq: 0 },
+      {
+        version: 1,
+        id,
+        status: "starting",
+        turn: 0,
+        lastCommandSeq: 0,
+        lastEventSeq: 0,
+      },
     );
     await store.appendCommand(id, { type: "prompt", text: "first" });
 
-    const child = spawn(process.execPath, [resolve("dist/runner/main.js"), store.dir(id)], {
-      env: {
-        ...process.env,
-        PI_TMUX_RPC_COMMAND: process.execPath,
-        PI_TMUX_RPC_ARGS: JSON.stringify([resolve("test/fixtures/fake-rpc-child.mjs")]),
+    const child = spawn(
+      process.execPath,
+      [resolve("dist/runner/main.js"), store.dir(id)],
+      {
+        env: {
+          ...process.env,
+          PI_TMUX_RPC_COMMAND: process.execPath,
+          PI_TMUX_RPC_ARGS: JSON.stringify([
+            resolve("test/fixtures/fake-rpc-child.mjs"),
+          ]),
+        },
+        stdio: "ignore",
       },
-      stdio: "ignore",
-    });
+    );
     cleanup.push({ root, child });
 
     // Wait for first command to be processed and result written
@@ -72,7 +88,11 @@ describe("durable lifecycle", () => {
     const restartedStore = new ProtocolStore(root);
     await restartedStore.appendCommand(id, { type: "send", text: "second" });
 
-    await waitFor(async () => ((await restartedStore.readState(id)).lastCommandSeq === 2 ? true : undefined));
+    await waitFor(async () =>
+      (await restartedStore.readState(id)).lastCommandSeq === 2
+        ? true
+        : undefined,
+    );
     const res2 = await waitFor(async () => {
       const value = await restartedStore.readResult(id);
       return value?.turn === 2 ? value : undefined;
@@ -82,17 +102,25 @@ describe("durable lifecycle", () => {
     expect(res2.commandSeq).toBe(2);
 
     // Verify commands were acked in order
-    const acks = (await restartedStore.readLog<any>(id, "events")).filter((x) => x.type === "command_ack");
+    const acks = (await restartedStore.readLog<any>(id, "events")).filter(
+      (x) => x.type === "command_ack",
+    );
     expect(acks.map((x) => x.commandSeq)).toEqual([1, 2]);
 
     // Verify high-frequency message_update streaming events are NOT in events.jsonl
     const allEvents = await restartedStore.readLog<any>(id, "events");
-    const streamingEvents = allEvents.filter((x) => x.type === "message_update");
+    const streamingEvents = allEvents.filter(
+      (x) => x.type === "message_update",
+    );
     expect(streamingEvents).toHaveLength(0);
 
     // Clean stop
     await restartedStore.appendCommand(id, { type: "stop" });
-    await waitFor(async () => ((await restartedStore.readState(id)).status === "stopped" ? true : undefined));
+    await waitFor(async () =>
+      (await restartedStore.readState(id)).status === "stopped"
+        ? true
+        : undefined,
+    );
   });
 
   it("handles RPC extension UI dialog requests without hanging", async () => {
@@ -108,18 +136,31 @@ describe("durable lifecycle", () => {
         cwd: root,
         launch: { task: "first" },
       },
-      { version: 1, id, status: "starting", turn: 0, lastCommandSeq: 0, lastEventSeq: 0 },
+      {
+        version: 1,
+        id,
+        status: "starting",
+        turn: 0,
+        lastCommandSeq: 0,
+        lastEventSeq: 0,
+      },
     );
     await store.appendCommand(id, { type: "prompt", text: "trigger_dialog" });
 
-    const child = spawn(process.execPath, [resolve("dist/runner/main.js"), store.dir(id)], {
-      env: {
-        ...process.env,
-        PI_TMUX_RPC_COMMAND: process.execPath,
-        PI_TMUX_RPC_ARGS: JSON.stringify([resolve("test/fixtures/fake-rpc-child.mjs")]),
+    const child = spawn(
+      process.execPath,
+      [resolve("dist/runner/main.js"), store.dir(id)],
+      {
+        env: {
+          ...process.env,
+          PI_TMUX_RPC_COMMAND: process.execPath,
+          PI_TMUX_RPC_ARGS: JSON.stringify([
+            resolve("test/fixtures/fake-rpc-child.mjs"),
+          ]),
+        },
+        stdio: "ignore",
       },
-      stdio: "ignore",
-    });
+    );
     cleanup.push({ root, child });
 
     // The fake child emits an extension_ui_request and waits for extension_ui_response.
@@ -150,19 +191,35 @@ describe("durable lifecycle", () => {
         launch: { task: "remember: secret-token-xyz" },
         piSessionFile: fakeSessionFile,
       },
-      { version: 1, id, status: "starting", turn: 0, lastCommandSeq: 0, lastEventSeq: 0 },
+      {
+        version: 1,
+        id,
+        status: "starting",
+        turn: 0,
+        lastCommandSeq: 0,
+        lastEventSeq: 0,
+      },
     );
-    await store.appendCommand(id, { type: "prompt", text: "remember: secret-token-xyz" });
+    await store.appendCommand(id, {
+      type: "prompt",
+      text: "remember: secret-token-xyz",
+    });
 
     // Start runner 1
-    const runner1 = spawn(process.execPath, [resolve("dist/runner/main.js"), store.dir(id)], {
-      env: {
-        ...process.env,
-        PI_TMUX_RPC_COMMAND: process.execPath,
-        PI_TMUX_RPC_ARGS: JSON.stringify([resolve("test/fixtures/fake-rpc-child.mjs")]),
+    const runner1 = spawn(
+      process.execPath,
+      [resolve("dist/runner/main.js"), store.dir(id)],
+      {
+        env: {
+          ...process.env,
+          PI_TMUX_RPC_COMMAND: process.execPath,
+          PI_TMUX_RPC_ARGS: JSON.stringify([
+            resolve("test/fixtures/fake-rpc-child.mjs"),
+          ]),
+        },
+        stdio: "ignore",
       },
-      stdio: "ignore",
-    });
+    );
     cleanup.push({ root, child: runner1 });
 
     // Wait for turn 1 to complete
@@ -177,21 +234,29 @@ describe("durable lifecycle", () => {
     await new Promise((r) => setTimeout(r, 100));
 
     // RESTART runner: launch a new runner on the same worker directory
-    const runner2 = spawn(process.execPath, [resolve("dist/runner/main.js"), store.dir(id)], {
-      env: {
-        ...process.env,
-        PI_TMUX_RPC_COMMAND: process.execPath,
-        PI_TMUX_RPC_ARGS: JSON.stringify([resolve("test/fixtures/fake-rpc-child.mjs")]),
+    const runner2 = spawn(
+      process.execPath,
+      [resolve("dist/runner/main.js"), store.dir(id)],
+      {
+        env: {
+          ...process.env,
+          PI_TMUX_RPC_COMMAND: process.execPath,
+          PI_TMUX_RPC_ARGS: JSON.stringify([
+            resolve("test/fixtures/fake-rpc-child.mjs"),
+          ]),
+        },
+        stdio: "ignore",
       },
-      stdio: "ignore",
-    });
+    );
     cleanup.push({ root, child: runner2 });
 
     // Send follow-up command asking to recall the secret
     await store.appendCommand(id, { type: "send", text: "recall" });
 
     // Wait for turn 2 to be processed and completed by restarted runner
-    await waitFor(async () => ((await store.readState(id)).lastCommandSeq === 2 ? true : undefined));
+    await waitFor(async () =>
+      (await store.readState(id)).lastCommandSeq === 2 ? true : undefined,
+    );
     const res2 = await waitFor(async () => {
       const r = await store.readResult(id);
       return r?.turn === 2 ? r : undefined;
@@ -201,7 +266,9 @@ describe("durable lifecycle", () => {
     expect(res2.text).toBe("recalled:secret-token-xyz");
 
     await store.appendCommand(id, { type: "stop" });
-    await waitFor(async () => ((await store.readState(id)).status === "stopped" ? true : undefined));
+    await waitFor(async () =>
+      (await store.readState(id)).status === "stopped" ? true : undefined,
+    );
   });
 
   it("supports real tmux supervision, parent restart, reconnect, and follow-up prompt", async () => {
@@ -220,7 +287,9 @@ describe("durable lifecycle", () => {
     const origCommand = process.env.PI_TMUX_RPC_COMMAND;
     const origArgs = process.env.PI_TMUX_RPC_ARGS;
     process.env.PI_TMUX_RPC_COMMAND = process.execPath;
-    process.env.PI_TMUX_RPC_ARGS = JSON.stringify([resolve("test/fixtures/fake-rpc-child.mjs")]);
+    process.env.PI_TMUX_RPC_ARGS = JSON.stringify([
+      resolve("test/fixtures/fake-rpc-child.mjs"),
+    ]);
 
     try {
       const state = await manager1.spawn({ task: "hello" }, root, id);
@@ -231,7 +300,9 @@ describe("durable lifecycle", () => {
 
       // Verify status call immediately after spawn does not orphan healthy starting worker
       const immediateStatus = await manager1.status(id);
-      expect(["starting", "waiting", "running"]).toContain(immediateStatus.status);
+      expect(["starting", "waiting", "running"]).toContain(
+        immediateStatus.status,
+      );
 
       // Wait for turn 1 to complete and settle into waiting
       await waitFor(async () => {
@@ -277,7 +348,8 @@ describe("durable lifecycle", () => {
       await manager2.forceTerminate(id);
       expect(await tmuxAdapter.exists(id)).toBe(false);
     } finally {
-      if (origCommand !== undefined) process.env.PI_TMUX_RPC_COMMAND = origCommand;
+      if (origCommand !== undefined)
+        process.env.PI_TMUX_RPC_COMMAND = origCommand;
       else delete process.env.PI_TMUX_RPC_COMMAND;
       if (origArgs !== undefined) process.env.PI_TMUX_RPC_ARGS = origArgs;
       else delete process.env.PI_TMUX_RPC_ARGS;
@@ -300,18 +372,31 @@ describe("durable lifecycle", () => {
         launch: { task: "deep problem", thinking: "high" },
         piSessionFile: fakeSessionFile,
       },
-      { version: 1, id, status: "starting", turn: 0, lastCommandSeq: 0, lastEventSeq: 0 },
+      {
+        version: 1,
+        id,
+        status: "starting",
+        turn: 0,
+        lastCommandSeq: 0,
+        lastEventSeq: 0,
+      },
     );
     await store.appendCommand(id, { type: "prompt", text: "deep problem" });
 
-    const child = spawn(process.execPath, [resolve("dist/runner/main.js"), store.dir(id)], {
-      env: {
-        ...process.env,
-        PI_TMUX_RPC_COMMAND: process.execPath,
-        PI_TMUX_RPC_ARGS: JSON.stringify([resolve("test/fixtures/fake-rpc-child.mjs")]),
+    const child = spawn(
+      process.execPath,
+      [resolve("dist/runner/main.js"), store.dir(id)],
+      {
+        env: {
+          ...process.env,
+          PI_TMUX_RPC_COMMAND: process.execPath,
+          PI_TMUX_RPC_ARGS: JSON.stringify([
+            resolve("test/fixtures/fake-rpc-child.mjs"),
+          ]),
+        },
+        stdio: "ignore",
       },
-      stdio: "ignore",
-    });
+    );
     cleanup.push({ root, child });
 
     await waitFor(async () => {
@@ -324,6 +409,8 @@ describe("durable lifecycle", () => {
     expect(saved.thinkingLevel).toBe("high");
 
     await store.appendCommand(id, { type: "stop" });
-    await waitFor(async () => ((await store.readState(id)).status === "stopped" ? true : undefined));
+    await waitFor(async () =>
+      (await store.readState(id)).status === "stopped" ? true : undefined,
+    );
   });
 });

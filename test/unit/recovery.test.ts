@@ -8,7 +8,11 @@ import { TmuxAdapter, type Executor } from "../../src/tmux/adapter.js";
 import { workerId } from "../../src/types.js";
 
 const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((x) => rm(x, { recursive: true, force: true }))));
+afterEach(async () =>
+  Promise.all(
+    roots.splice(0).map((x) => rm(x, { recursive: true, force: true })),
+  ),
+);
 
 describe("recovery", () => {
   it("reconstructs history and marks stale workers orphaned", async () => {
@@ -28,12 +32,25 @@ describe("recovery", () => {
         piPid: 999998,
         heartbeatAt: "2000-01-01T00:00:00Z",
       },
-      { version: 1, id, status: "running", turn: 99, lastCommandSeq: 0, lastEventSeq: 0 },
+      {
+        version: 1,
+        id,
+        status: "running",
+        turn: 99,
+        lastCommandSeq: 0,
+        lastEventSeq: 0,
+      },
     );
     await store.appendEvent(id, { type: "rpc_started" });
-    const exec = vi.fn<Executor>().mockResolvedValue({ code: 1, stdout: "", stderr: "" });
+    const exec = vi
+      .fn<Executor>()
+      .mockResolvedValue({ code: 1, stdout: "", stderr: "" });
     const state = await new Recovery(store, new TmuxAdapter(exec)).recover(id);
-    expect(state).toMatchObject({ status: "orphaned", turn: 0, lastEventSeq: 2 });
+    expect(state).toMatchObject({
+      status: "orphaned",
+      turn: 0,
+      lastEventSeq: 2,
+    });
   });
 
   it("does not orphan a fresh starting worker within startup grace period", async () => {
@@ -51,10 +68,21 @@ describe("recovery", () => {
         cwd: root,
         launch: { task: "fresh" },
       },
-      { version: 1, id, status: "starting", turn: 0, lastCommandSeq: 0, lastEventSeq: 0 },
+      {
+        version: 1,
+        id,
+        status: "starting",
+        turn: 0,
+        lastCommandSeq: 0,
+        lastEventSeq: 0,
+      },
     );
-    const exec = vi.fn<Executor>().mockResolvedValue({ code: 0, stdout: "", stderr: "" });
-    const recovery = new Recovery(store, new TmuxAdapter(exec), { startupGraceMs: 15_000 });
+    const exec = vi
+      .fn<Executor>()
+      .mockResolvedValue({ code: 0, stdout: "", stderr: "" });
+    const recovery = new Recovery(store, new TmuxAdapter(exec), {
+      startupGraceMs: 15_000,
+    });
     const state = await recovery.recover(id);
     expect(state.status).toBe("starting");
 
@@ -77,10 +105,21 @@ describe("recovery", () => {
         cwd: root,
         launch: { task: "stale" },
       },
-      { version: 1, id, status: "starting", turn: 0, lastCommandSeq: 0, lastEventSeq: 0 },
+      {
+        version: 1,
+        id,
+        status: "starting",
+        turn: 0,
+        lastCommandSeq: 0,
+        lastEventSeq: 0,
+      },
     );
-    const exec = vi.fn<Executor>().mockResolvedValue({ code: 1, stdout: "", stderr: "" });
-    const recovery = new Recovery(store, new TmuxAdapter(exec), { startupGraceMs: 5_000 });
+    const exec = vi
+      .fn<Executor>()
+      .mockResolvedValue({ code: 1, stdout: "", stderr: "" });
+    const recovery = new Recovery(store, new TmuxAdapter(exec), {
+      startupGraceMs: 5_000,
+    });
     const state = await recovery.recover(id);
     expect(state.status).toBe("orphaned");
   });
@@ -102,7 +141,14 @@ describe("recovery", () => {
         piPid: 999998,
         heartbeatAt: "2000-01-01T00:00:00Z", // stale
       },
-      { version: 1, id, status: "starting", turn: 0, lastCommandSeq: 0, lastEventSeq: 0 },
+      {
+        version: 1,
+        id,
+        status: "starting",
+        turn: 0,
+        lastCommandSeq: 0,
+        lastEventSeq: 0,
+      },
     );
     await store.appendEvent(id, { type: "rpc_started" });
     await store.appendEvent(id, { type: "command_ack", commandSeq: 1 });
@@ -110,7 +156,9 @@ describe("recovery", () => {
     await store.appendEvent(id, { type: "agent_settled" });
 
     // Settled worker is waiting, not terminal completed
-    const exec = vi.fn<Executor>().mockResolvedValue({ code: 1, stdout: "", stderr: "" });
+    const exec = vi
+      .fn<Executor>()
+      .mockResolvedValue({ code: 1, stdout: "", stderr: "" });
     const recovery = new Recovery(store, new TmuxAdapter(exec));
     const state = await recovery.recover(id);
     // Because runner is dead and heartbeat is stale, recovery marks it orphaned

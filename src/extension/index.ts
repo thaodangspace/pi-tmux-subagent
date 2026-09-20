@@ -15,5 +15,8 @@ export default function extension(pi: ExtensionAPI): void {
     watcher = new ActivityWatcher(manager, ctx);
     await watcher.start();
   });
-  pi.on("session_shutdown", () => { watcher?.dispose(); watcher = undefined; });
+  pi.on("session_shutdown", () => {
+    watcher?.dispose();
+    watcher = undefined;
+  });
 }
