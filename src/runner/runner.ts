@@ -9,14 +9,15 @@ import type { WorkerId } from "../types.js";
 export interface RunnerOptions { pollMs?: number; heartbeatMs?: number; rpcCommand?: string; rpcArgs?: string[]; output?: NodeJS.WritableStream }
 export class Runner {
   private stopped = false; private latestText = ""; private heartbeat?: NodeJS.Timeout;
-  private readonly store: ProtocolStore; private readonly id: WorkerId; private readonly rpc: RpcClient;
+  private readonly store: ProtocolStore; private readonly id: WorkerId; private rpc!: RpcClient;
   constructor(private readonly runDir: string, private readonly options: RunnerOptions = {}) {
     const parts = runDir.split(/[\\/]/); this.id = parts[parts.length - 1] as WorkerId;
     this.store = new ProtocolStore(parts.slice(0, -1).join("/") || "/");
-    this.rpc = new RpcClient({ cwd: runDir, ...(options.rpcCommand ? { command: options.rpcCommand } : {}), ...(options.rpcArgs ? { args: options.rpcArgs } : {}) });
   }
   async run(): Promise<void> {
     let meta = await this.store.readMeta(this.id);
+    const launchArgs = ["--mode", "rpc", ...(meta.launch.model ? ["--model", meta.launch.model] : []), ...(meta.launch.name ? ["--name", meta.launch.name] : []), ...(meta.launch.systemPrompt ? ["--system-prompt", meta.launch.systemPrompt] : []), ...(meta.launch.tools ? ["--tools", meta.launch.tools.join(",")] : []), ...(meta.launch.rpcArgs ?? [])];
+    this.rpc = new RpcClient({ cwd: meta.cwd, ...(this.options.rpcCommand ? { command: this.options.rpcCommand } : {}), args: this.options.rpcArgs ?? launchArgs });
     meta = { ...meta, runnerPid: process.pid, heartbeatAt: new Date().toISOString() }; await this.store.writeMeta(meta);
     this.rpc.on("stderr", (text) => { void this.store.appendRunnerLog(this.id, String(text)); });
     this.rpc.on("event", (event) => { void this.onRpc(event); });
