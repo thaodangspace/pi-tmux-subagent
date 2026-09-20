@@ -16,6 +16,83 @@ async function atomicJson(path: string, value: unknown): Promise<void> {
   await rename(temporary, path);
 }
 
+async function getLastSeqAndRepair(filePath: string): Promise<number> {
+  let handle;
+  try {
+    handle = await open(filePath, "r+");
+  } catch (err: any) {
+    if (err.code === "ENOENT") return 0;
+    throw err;
+  }
+  try {
+    const stats = await handle.stat();
+    let size = stats.size;
+    if (size === 0) return 0;
+
+    const bufferSize = Math.min(size, 65536);
+    const buffer = Buffer.alloc(bufferSize);
+    let position = size - bufferSize;
+    const { bytesRead } = await handle.read(buffer, 0, bufferSize, position);
+
+    const lastByte = buffer[bytesRead - 1];
+    if (lastByte !== 0x0a) {
+      let lastNewlineIdx = buffer.lastIndexOf(0x0a, bytesRead - 1);
+      while (lastNewlineIdx === -1 && position > 0) {
+        const toRead = Math.min(position, 65536);
+        position -= toRead;
+        const prevBuffer = Buffer.alloc(toRead);
+        await handle.read(prevBuffer, 0, toRead, position);
+        lastNewlineIdx = prevBuffer.lastIndexOf(0x0a);
+        if (lastNewlineIdx !== -1) {
+          const truncateOffset = position + lastNewlineIdx + 1;
+          await handle.truncate(truncateOffset);
+          size = truncateOffset;
+          break;
+        }
+      }
+      if (lastNewlineIdx === -1 && position === 0) {
+        await handle.truncate(0);
+        return 0;
+      } else if (lastNewlineIdx !== -1 && size === stats.size) {
+        const truncateOffset = position + lastNewlineIdx + 1;
+        await handle.truncate(truncateOffset);
+        size = truncateOffset;
+      }
+    }
+
+    if (size === 0) return 0;
+
+    const readLen = Math.min(size, 65536);
+    let readPos = size - readLen;
+    const tailBuf = Buffer.alloc(readLen);
+    await handle.read(tailBuf, 0, readLen, readPos);
+
+    const prevNewline = tailBuf.lastIndexOf(0x0a, readLen - 2);
+    while (prevNewline === -1 && readPos > 0) {
+      const toRead = Math.min(readPos, 65536);
+      readPos -= toRead;
+      const prevBuf = Buffer.alloc(toRead);
+      await handle.read(prevBuf, 0, toRead, readPos);
+      const nl = prevBuf.lastIndexOf(0x0a);
+      if (nl !== -1) {
+        const lineLen = size - 1 - (readPos + nl + 1);
+        const lineBuf = Buffer.alloc(lineLen);
+        await handle.read(lineBuf, 0, lineLen, readPos + nl + 1);
+        const record = JSON.parse(lineBuf.toString("utf8").trim());
+        return record.seq ?? 0;
+      }
+    }
+
+    const startOffset = prevNewline === -1 ? 0 : prevNewline + 1;
+    const line = tailBuf.subarray(startOffset, readLen - 1).toString("utf8").trim();
+    if (!line) return 0;
+    const record = JSON.parse(line);
+    return record.seq ?? 0;
+  } finally {
+    await handle.close();
+  }
+}
+
 export class ProtocolStore {
   constructor(readonly root = DEFAULT_REGISTRY_ROOT) {}
   dir(id: WorkerId | string): string { return join(this.root, workerId(String(id))); }
@@ -36,15 +113,20 @@ export class ProtocolStore {
   async readState(id: WorkerId | string): Promise<WorkerState> { return this.readJson(id, "state.json"); }
   async readResult(id: WorkerId | string): Promise<WorkerResult | undefined> { try { return await this.readJson(id, "result.json"); } catch (error: any) { if (error.code === "ENOENT") return undefined; throw error; } }
   private async readJson<T>(id: WorkerId | string, file: string): Promise<T> { return JSON.parse(await readFile(this.path(id, file), "utf8")) as T; }
-  async readLog<T extends { seq: number }>(id: WorkerId | string, name: LogName): Promise<T[]> {
+  async readLog<T extends { seq: number }>(id: WorkerId | string, name: LogName, fromSeq = 1): Promise<T[]> {
     const text = await readFile(this.path(id, `${name}.jsonl`), "utf8");
     const lines = text.split("\n"); const output: T[] = [];
     for (let index = 0; index < lines.length; index++) {
       const line = lines[index]!; if (!line) continue;
-      try { output.push(JSON.parse(line) as T); }
+      try {
+        const record = JSON.parse(line) as T;
+        if (record.seq >= fromSeq) {
+          output.push(record);
+        }
+      }
       catch (error) { if (index === lines.length - 1 && !text.endsWith("\n")) break; throw new SubagentError("CORRUPT_LOG", `Invalid ${name}.jsonl record ${index + 1}`, error); }
     }
-    for (let i = 0; i < output.length; i++) if (output[i]!.seq !== i + 1) throw new SubagentError("INVALID_SEQUENCE", `${name} sequence expected ${i + 1}, got ${output[i]!.seq}`);
+    for (let i = 0; i < output.length; i++) if (output[i]!.seq !== fromSeq + i) throw new SubagentError("INVALID_SEQUENCE", `${name} sequence expected ${fromSeq + i}, got ${output[i]!.seq}`);
     return output;
   }
   async appendCommand(id: WorkerId | string, command: { type: "prompt" | "send" | "steer"; text: string } | { type: "abort" | "stop" }): Promise<WorkerCommand> { return this.append(id, "commands", command) as Promise<WorkerCommand>; }
@@ -52,9 +134,10 @@ export class ProtocolStore {
   private async append(id: WorkerId | string, name: LogName, value: object): Promise<unknown> {
     const lock = this.path(id, `.${name}.lock`); await this.acquire(lock);
     try {
-      const records = await this.readLog<{ seq: number }>(id, name);
-      const record = { version: 1, seq: records.length + 1, at: new Date().toISOString(), ...value };
-      await appendFile(this.path(id, `${name}.jsonl`), `${JSON.stringify(record)}\n`, { encoding: "utf8", flag: "a" });
+      const filePath = this.path(id, `${name}.jsonl`);
+      const lastSeq = await getLastSeqAndRepair(filePath);
+      const record = { version: 1, seq: lastSeq + 1, at: new Date().toISOString(), ...value };
+      await appendFile(filePath, `${JSON.stringify(record)}\n`, { encoding: "utf8", flag: "a" });
       return record;
     } finally { await rm(lock, { recursive: true, force: true }); }
   }

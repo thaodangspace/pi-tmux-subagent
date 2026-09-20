@@ -83,5 +83,8 @@ export class RpcClient extends EventEmitter {
   prompt(message: string, streamingBehavior?: "steer" | "followUp"): Promise<any> { return this.send({ type: "prompt", message, ...(streamingBehavior ? { streamingBehavior } : {}) }); }
   steer(message: string): Promise<any> { return this.send({ type: "steer", message }); }
   abort(): Promise<any> { return this.send({ type: "abort" }); }
+  getState(): Promise<any> { return this.send({ type: "get_state" }); }
+  setThinkingLevel(level: string): Promise<any> { return this.send({ type: "set_thinking_level", level }); }
+  switchSession(sessionPath: string): Promise<any> { return this.send({ type: "switch_session", sessionPath }); }
   stop(signal: NodeJS.Signals = "SIGTERM"): void { this.child?.kill(signal); }
 }
