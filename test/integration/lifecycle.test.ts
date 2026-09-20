@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ProtocolStore } from "../../src/protocol/store.js";
 import { Manager } from "../../src/manager/manager.js";
+import { CompletionNotifier } from "../../src/extension/completion-notifier.js";
 import { TmuxAdapter } from "../../src/tmux/adapter.js";
 import { workerId } from "../../src/types.js";
 
@@ -408,6 +409,109 @@ describe("durable lifecycle", () => {
     const saved = JSON.parse(await readFile(fakeSessionFile, "utf8"));
     expect(saved.thinkingLevel).toBe("high");
 
+    await store.appendCommand(id, { type: "stop" });
+    await waitFor(async () =>
+      (await store.readState(id)).status === "stopped" ? true : undefined,
+    );
+  });
+
+  it("delivers compact completion notification into Pi session without streaming events, survives consumer restart, and allows lazy result fetching", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-sa-notify-"));
+    const store = new ProtocolStore(root);
+    const manager = new Manager({ store });
+    const id = workerId("notify1");
+
+    await store.create(
+      {
+        version: 1,
+        id,
+        tmuxSession: "pi-sa-notify1",
+        createdAt: new Date().toISOString(),
+        cwd: root,
+        launch: { task: "integration notify task" },
+      },
+      {
+        version: 1,
+        id,
+        status: "starting",
+        turn: 0,
+        lastCommandSeq: 0,
+        lastEventSeq: 0,
+      },
+    );
+    await store.appendCommand(id, {
+      type: "prompt",
+      text: "task-completion-check",
+    });
+
+    const child = spawn(
+      process.execPath,
+      [resolve("dist/runner/main.js"), store.dir(id)],
+      {
+        env: {
+          ...process.env,
+          PI_TMUX_RPC_COMMAND: process.execPath,
+          PI_TMUX_RPC_ARGS: JSON.stringify([
+            resolve("test/fixtures/fake-rpc-child.mjs"),
+          ]),
+        },
+        stdio: "ignore",
+      },
+    );
+    cleanup.push({ root, child });
+
+    const messages: any[] = [];
+    const pi = {
+      sendMessage: (msg: any) => messages.push(msg),
+    };
+    const notifier = new CompletionNotifier(manager, pi as any);
+
+    // Wait for the worker to finish turn 1 in the background
+    await waitFor(async () => {
+      const res = await store.readResult(id);
+      return res?.turn === 1 ? res : undefined;
+    });
+
+    // Main Pi session receives compact completion notification
+    await notifier.poll();
+    expect(messages).toHaveLength(1);
+    const firstMsg = messages[0];
+    expect(firstMsg.customType).toBe("subagent_completed");
+    expect(firstMsg.display).toBe(true);
+    expect(firstMsg.details).toEqual({
+      type: "subagent_completed",
+      id,
+      turn: 1,
+      status: "completed",
+      summary: "reply-1:task-completion-check",
+      hasDetails: false,
+    });
+    expect(firstMsg.content).toContain("[subagent notify1 completed]");
+    expect(firstMsg.content).toContain("reply-1:task-completion-check");
+    expect(firstMsg.content).toContain(
+      'Full result available via subagent({ action: "result", id: "notify1" }).',
+    );
+
+    // Verify NO streaming events (message_update, token deltas) were sent into sendMessage
+    for (const msg of messages) {
+      expect(msg.customType).not.toBe("message_update");
+      expect(JSON.stringify(msg)).not.toContain("text_delta");
+    }
+
+    // Main agent can subsequently call manager.result(id) to fetch full details
+    const fullResult = await manager.result(id);
+    expect(fullResult?.text).toBe("reply-1:task-completion-check");
+
+    // Extension restart simulation: new notifier does not redeliver already acknowledged completions
+    const restartedMessages: any[] = [];
+    const restartedNotifier = new CompletionNotifier(
+      new Manager({ store: new ProtocolStore(root) }),
+      { sendMessage: (msg: any) => restartedMessages.push(msg) } as any,
+    );
+    await restartedNotifier.poll();
+    expect(restartedMessages).toHaveLength(0);
+
+    // Clean stop
     await store.appendCommand(id, { type: "stop" });
     await waitFor(async () =>
       (await store.readState(id)).status === "stopped" ? true : undefined,
