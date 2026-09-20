@@ -7,8 +7,11 @@ import { completionSummary } from "../protocol/completion.js";
 import type {
   CompletionFeedEntry,
   CompletionQuery,
+  EventHistoryOptions,
   LaunchConfig,
   WorkerCompletion,
+  WorkerEvent,
+  WorkerEventsResult,
   WorkerMeta,
   WorkerResult,
   WorkerState,
@@ -18,6 +21,10 @@ import { sessionName } from "../tmux/adapter.js";
 import { SubagentError, workerId, type WorkerId } from "../types.js";
 import { WorktreeAdapter } from "../worktree/adapter.js";
 
+export const DEFAULT_EVENT_LIMIT = 50;
+export const MAX_EVENT_LIMIT = 100;
+export const MAX_EVENT_BYTES = 40_000;
+
 export interface ManagerOptions {
   store?: ProtocolStore;
   tmux?: TmuxAdapter;
@@ -25,12 +32,18 @@ export interface ManagerOptions {
   runnerFile?: string;
   staleMs?: number;
   startupGraceMs?: number;
+  defaultEventLimit?: number;
+  maxEventLimit?: number;
+  maxEventBytes?: number;
 }
 
 export class Manager {
   readonly store: ProtocolStore;
   readonly tmux: TmuxAdapter;
   readonly worktree: WorktreeAdapter;
+  readonly defaultEventLimit: number;
+  readonly maxEventLimit: number;
+  readonly maxEventBytes: number;
   private readonly runnerFile: string;
   private readonly recoveryOptions: RecoveryOptions;
 
@@ -38,6 +51,9 @@ export class Manager {
     this.store = options.store ?? new ProtocolStore();
     this.tmux = options.tmux ?? new TmuxAdapter();
     this.worktree = options.worktree ?? new WorktreeAdapter();
+    this.defaultEventLimit = options.defaultEventLimit ?? DEFAULT_EVENT_LIMIT;
+    this.maxEventLimit = options.maxEventLimit ?? MAX_EVENT_LIMIT;
+    this.maxEventBytes = options.maxEventBytes ?? MAX_EVENT_BYTES;
     this.runnerFile =
       options.runnerFile ??
       resolve(dirname(fileURLToPath(import.meta.url)), "../runner/main.js");
@@ -164,8 +180,112 @@ export class Manager {
       id,
     );
   }
-  result(id: string): Promise<WorkerResult | undefined> {
-    return this.store.readResult(workerId(id));
+  async result(id: string): Promise<WorkerResult | undefined> {
+    const res = await this.store.readResult(workerId(id));
+    if (!res) return undefined;
+    return {
+      ...res,
+      resultSeq: res.resultSeq ?? res.eventSeq,
+    };
+  }
+  async getResult(id: string): Promise<WorkerResult> {
+    const value = workerId(id);
+    try {
+      await this.store.readMeta(value);
+    } catch (error: any) {
+      if (error?.code === "ENOENT") {
+        throw new SubagentError(
+          "WORKER_NOT_FOUND",
+          `Worker not found: ${value}`,
+        );
+      }
+      throw error;
+    }
+    const result = await this.result(value);
+    if (!result) {
+      throw new SubagentError(
+        "RESULT_NOT_FOUND",
+        `No result available for worker: ${value}`,
+      );
+    }
+    return result;
+  }
+  async events(
+    id: string,
+    options: EventHistoryOptions = {},
+  ): Promise<WorkerEventsResult> {
+    const value = workerId(id);
+    try {
+      await this.store.readMeta(value);
+    } catch (error: any) {
+      if (error?.code === "ENOENT") {
+        throw new SubagentError(
+          "WORKER_NOT_FOUND",
+          `Worker not found: ${value}`,
+        );
+      }
+      throw error;
+    }
+
+    const fromSeq = options.fromSeq ?? 1;
+    if (!Number.isSafeInteger(fromSeq) || fromSeq < 1) {
+      throw new SubagentError(
+        "INVALID_SEQUENCE",
+        `Invalid fromSeq: ${options.fromSeq}. Expected a positive integer >= 1`,
+      );
+    }
+
+    let limit = this.defaultEventLimit;
+    if (options.limit !== undefined) {
+      if (!Number.isSafeInteger(options.limit) || options.limit < 1) {
+        throw new SubagentError(
+          "INVALID_ARGUMENT",
+          `Invalid limit: ${options.limit}. Expected a positive integer >= 1`,
+        );
+      }
+      limit = Math.min(options.limit, this.maxEventLimit);
+    }
+
+    const records = await this.store.readLog<WorkerEvent>(
+      value,
+      "events",
+      fromSeq,
+      limit + 1,
+    );
+
+    let accumulatedBytes = 0;
+    const selectedEvents: WorkerEvent[] = [];
+    let hasMore = false;
+    let nextSeq: number | undefined;
+
+    for (let i = 0; i < records.length; i++) {
+      const record = records[i]!;
+      if (selectedEvents.length >= limit) {
+        hasMore = true;
+        nextSeq = record.seq;
+        break;
+      }
+      const recordBytes = Buffer.byteLength(JSON.stringify(record), "utf8");
+      if (
+        selectedEvents.length > 0 &&
+        accumulatedBytes + recordBytes > this.maxEventBytes
+      ) {
+        hasMore = true;
+        nextSeq = record.seq;
+        break;
+      }
+      selectedEvents.push(record);
+      accumulatedBytes += recordBytes;
+    }
+
+    return {
+      version: 1,
+      id: value,
+      events: selectedEvents,
+      fromSeq,
+      ...(nextSeq !== undefined ? { nextSeq } : {}),
+      hasMore,
+    };
   }
   completion(id: string): Promise<WorkerCompletion | undefined> {
     return this.store.readCompletion(workerId(id));

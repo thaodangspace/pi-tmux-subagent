@@ -324,8 +324,39 @@ export class ProtocolStore {
     id: WorkerId | string,
     name: LogName,
     fromSeq = 1,
+    limit?: number,
   ): Promise<T[]> {
-    const text = await readFile(this.path(id, `${name}.jsonl`), "utf8");
+    if (!Number.isSafeInteger(fromSeq) || fromSeq < 1) {
+      throw new SubagentError(
+        "INVALID_SEQUENCE",
+        `Invalid fromSeq: ${fromSeq}. Expected a positive integer >= 1`,
+      );
+    }
+    if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1)) {
+      throw new SubagentError(
+        "INVALID_ARGUMENT",
+        `Invalid limit: ${limit}. Expected a positive integer >= 1`,
+      );
+    }
+    let text: string;
+    try {
+      text = await readFile(this.path(id, `${name}.jsonl`), "utf8");
+    } catch (error: any) {
+      if (error?.code === "ENOENT") {
+        try {
+          await this.readMeta(id);
+        } catch (metaErr: any) {
+          if (metaErr?.code === "ENOENT") {
+            throw new SubagentError(
+              "WORKER_NOT_FOUND",
+              `Worker not found: ${id}`,
+            );
+          }
+        }
+        return [];
+      }
+      throw error;
+    }
     const lines = text.split("\n");
     const output: T[] = [];
     for (let index = 0; index < lines.length; index++) {
@@ -335,6 +366,9 @@ export class ProtocolStore {
         const record = JSON.parse(line) as T;
         if (record.seq >= fromSeq) {
           output.push(record);
+          if (limit !== undefined && output.length >= limit) {
+            break;
+          }
         }
       } catch (error) {
         if (index === lines.length - 1 && !text.endsWith("\n")) break;
