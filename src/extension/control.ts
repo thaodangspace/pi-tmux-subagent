@@ -1,5 +1,6 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { Manager } from "../manager/manager.js";
+import { inspectWorker } from "./inspection.js";
 import { loadWorkerViews } from "./widget.js";
 
 export async function openSubagentsControl(manager: Manager, ctx: ExtensionCommandContext): Promise<void> {
@@ -37,7 +38,7 @@ export async function openSubagentsControl(manager: Manager, ctx: ExtensionComma
         ctx.ui.notify(`Stop queued for ${selected.id}`, "warning");
       }
     } else if (action === "Inspect / attach") {
-      ctx.ui.notify(`Run /subagent-inspect ${selected.id}`, "info");
+      ctx.ui.notify(await inspectWorker(manager, selected.id), "info");
     }
   } catch (error) {
     ctx.ui.notify(`Subagent action failed: ${error instanceof Error ? error.message : String(error)}`, "error");
