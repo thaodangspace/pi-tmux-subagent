@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readdir } from "node:fs/promises";
+import { Recovery } from "./recovery.js";
 import { ProtocolStore } from "../protocol/store.js";
 import type { LaunchConfig, WorkerMeta, WorkerResult, WorkerState } from "../protocol/types.js";
 import { TmuxAdapter } from "../tmux/adapter.js";
@@ -32,11 +32,8 @@ export class Manager {
   async stop(id: string): Promise<number> { return (await this.store.appendCommand(workerId(id), { type: "stop" })).seq; }
   status(id: string): Promise<WorkerState> { return this.store.readState(workerId(id)); }
   result(id: string): Promise<WorkerResult | undefined> { return this.store.readResult(workerId(id)); }
-  async list(): Promise<WorkerState[]> {
-    let names: string[]; try { names = await readdir(this.store.root); } catch (error: any) { if (error.code === "ENOENT") return []; throw error; }
-    const values = await Promise.all(names.filter((x) => /^[a-z0-9][a-z0-9-]{2,47}$/.test(x)).map((x) => this.status(x).catch(() => undefined)));
-    return values.filter((x): x is WorkerState => Boolean(x)).sort((a, b) => a.id.localeCompare(b.id));
-  }
+  async list(): Promise<WorkerState[]> { return new Recovery(this.store, this.tmux).scan(); }
+  async recover(id: string): Promise<WorkerState> { return new Recovery(this.store, this.tmux).recover(id); }
   attach(id: string): Promise<void> { return this.tmux.attach(workerId(id)); }
   async forceTerminate(id: string): Promise<void> { await this.tmux.terminate(workerId(id)); }
 }
