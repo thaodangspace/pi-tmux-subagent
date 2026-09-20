@@ -5,6 +5,10 @@ export interface ActivityView { at: string; text: string; kind: ActivityKind }
 export interface WorkerActivityView {
   id: string;
   name?: string;
+  provider?: string;
+  model?: string;
+  thinking?: string;
+  modelLabel?: string;
   status: WorkerStatus;
   turn: number;
   startedAt?: string;
@@ -66,14 +70,26 @@ export function recentActivity(input: WorkerProjectionInput, count = 8, limit = 
   return activities.sort((a, b) => a.at.localeCompare(b.at)).slice(-Math.max(0, count));
 }
 
+export function modelSelectionLabel(selection?: { provider?: string; model?: string; thinking?: string }): string | undefined {
+  if (!selection) return undefined;
+  const model = selection.provider && selection.model ? `${selection.provider}/${selection.model}` : selection.model ?? selection.provider;
+  return model ? `${model}${selection.thinking ? `-${selection.thinking}` : ""}` : selection.thinking ? `thinking:${selection.thinking}` : undefined;
+}
+
 export function projectWorker(input: WorkerProjectionInput, now = Date.now(), limit = DEFAULT_ACTIVITY_LIMIT): WorkerActivityView {
   const { state, meta } = input;
+  const selection = meta?.activeModel ?? meta?.launch;
+  const modelLabel = modelSelectionLabel(selection);
   const latest = recentActivity(input, 1, limit)[0];
   const startedAt = meta?.createdAt;
   const updatedAt = latest?.at ?? state.lastEventAt ?? startedAt;
   return {
     id: state.id,
     ...(meta?.launch.name ? { name: meta.launch.name } : {}),
+    ...(selection?.provider ? { provider: selection.provider } : {}),
+    ...(selection?.model ? { model: selection.model } : {}),
+    ...(selection?.thinking ? { thinking: selection.thinking } : {}),
+    ...(modelLabel ? { modelLabel } : {}),
     status: state.status,
     turn: state.turn,
     ...(startedAt ? { startedAt, elapsedMs: Math.max(0, now - Date.parse(startedAt)) } : {}),

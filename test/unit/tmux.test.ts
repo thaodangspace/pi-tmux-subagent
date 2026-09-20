@@ -9,7 +9,9 @@ describe("tmux adapter", () => {
   });
 
   it("uses argument arrays and exact targets", async () => {
-    const exec = vi.fn<Executor>().mockResolvedValue({ code: 0, stdout: "pi-sa-one\nother\n", stderr: "" });
+    const exec = vi.fn<Executor>().mockImplementation(async (_command, args) => args[0] === "list-panes"
+      ? { code: 0, stdout: "", stderr: "" }
+      : { code: 0, stdout: "pi-sa-one\nother\n", stderr: "" });
     const tmux = new TmuxAdapter(exec);
     expect(await tmux.exists("abc")).toBe(true);
     expect(await tmux.list()).toEqual(["pi-sa-one"]);
@@ -17,18 +19,39 @@ describe("tmux adapter", () => {
     expect(exec).toHaveBeenCalledWith("tmux", ["has-session", "-t", "=pi-sa-abc"]);
   });
 
+  it("creates a pane in the current tmux window", async () => {
+    const previousTmux = process.env.TMUX;
+    const previousPane = process.env.TMUX_PANE;
+    process.env.TMUX = "/tmp/tmux,1,0";
+    process.env.TMUX_PANE = "%3";
+    const exec = vi.fn<Executor>()
+      .mockResolvedValueOnce({ code: 1, stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ code: 0, stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ code: 0, stdout: "%9\n", stderr: "" })
+      .mockResolvedValueOnce({ code: 0, stdout: "", stderr: "" });
+    const tmux = new TmuxAdapter(exec);
+    try {
+      expect(await tmux.create("abc", import.meta.dirname, import.meta.filename)).toBe("%9");
+      expect(exec).toHaveBeenCalledWith("tmux", expect.arrayContaining(["split-window", "-t", "%3"]));
+      expect(exec).toHaveBeenCalledWith("tmux", ["set-option", "-p", "-t", "%9", "@pi_tmux_subagent_id", "abc"]);
+    } finally {
+      if (previousTmux === undefined) delete process.env.TMUX; else process.env.TMUX = previousTmux;
+      if (previousPane === undefined) delete process.env.TMUX_PANE; else process.env.TMUX_PANE = previousPane;
+    }
+  });
+
   it("uses interactive executor with inherited stdio for attach", async () => {
-    const exec = vi.fn<Executor>();
+    const exec = vi.fn<Executor>().mockResolvedValue({ code: 1, stdout: "", stderr: "" });
     const interactiveExec = vi.fn<InteractiveExecutor>().mockResolvedValue(0);
     const tmux = new TmuxAdapter(exec, interactiveExec);
 
     await tmux.attach("abc");
     expect(interactiveExec).toHaveBeenCalledWith("tmux", ["attach-session", "-t", "=pi-sa-abc"]);
-    expect(exec).not.toHaveBeenCalled();
+    expect(exec).toHaveBeenCalledWith("tmux", ["list-panes", "-a", "-F", "#{pane_id}\t#{@pi_tmux_subagent_id}"]);
   });
 
   it("throws SubagentError when interactive attach fails", async () => {
-    const exec = vi.fn<Executor>();
+    const exec = vi.fn<Executor>().mockResolvedValue({ code: 1, stdout: "", stderr: "" });
     const interactiveExec = vi.fn<InteractiveExecutor>().mockResolvedValue(1);
     const tmux = new TmuxAdapter(exec, interactiveExec);
 

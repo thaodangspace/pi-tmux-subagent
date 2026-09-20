@@ -27,6 +27,8 @@ describe("activity watcher", () => {
     status = "waiting";
     await vi.advanceTimersByTimeAsync(10);
     expect(setWidget).toHaveBeenCalledTimes(2);
+    const latestWidget = setWidget.mock.calls.at(-1)?.[1] as () => { render: (width: number) => string[] };
+    expect(latestWidget().render(80).join("\n")).toContain("waiting");
     fail = true;
     await vi.advanceTimersByTimeAsync(10);
     expect(errors).toHaveBeenCalledOnce();

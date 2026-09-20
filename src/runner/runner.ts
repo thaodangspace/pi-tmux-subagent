@@ -47,6 +47,7 @@ export class Runner {
 
     const launchArgs = [
       "--mode", "rpc",
+      ...(meta.launch.provider ? ["--provider", meta.launch.provider] : []),
       ...(meta.launch.model ? ["--model", meta.launch.model] : []),
       ...(meta.launch.thinking ? ["--thinking", meta.launch.thinking] : []),
       ...(meta.launch.name ? ["--name", meta.launch.name] : []),
@@ -80,6 +81,11 @@ export class Runner {
     const stateData = rpcState?.data ?? rpcState;
     const piSessionFile = stateData?.sessionFile ?? meta.piSessionFile;
     const piSessionId = stateData?.sessionId ?? meta.piSessionId;
+    const activeModel = {
+      ...(stateData?.model?.provider ? { provider: String(stateData.model.provider) } : meta.launch.provider ? { provider: meta.launch.provider } : {}),
+      ...(stateData?.model?.id ? { model: String(stateData.model.id) } : meta.launch.model ? { model: meta.launch.model } : {}),
+      ...(stateData?.thinkingLevel ? { thinking: String(stateData.thinkingLevel) } : meta.launch.thinking ? { thinking: meta.launch.thinking } : {}),
+    };
 
     if (meta.piSessionFile && stateData?.sessionFile && stateData.sessionFile !== meta.piSessionFile) {
       await this.rpc.switchSession(meta.piSessionFile).catch(() => undefined);
@@ -92,6 +98,7 @@ export class Runner {
       heartbeatAt: new Date().toISOString(),
       ...(piSessionFile ? { piSessionFile } : {}),
       ...(piSessionId ? { piSessionId } : {}),
+      ...(Object.keys(activeModel).length ? { activeModel } : {}),
     };
     await this.store.writeMeta(meta);
 

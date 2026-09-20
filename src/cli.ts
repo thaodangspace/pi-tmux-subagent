@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { resolveLaunch } from "./agents/discover.js";
 import { Manager } from "./manager/manager.js";
 import { ProtocolStore } from "./protocol/store.js";
 
@@ -16,6 +17,7 @@ Commands:
   status <id>        Show durable worker state
   result <id>        Show the latest final result
   stop <id>          Stop a worker
+  delete <id>        Delete a terminal worker and its stored data
   list               List durable workers
   attach <id>        Attach to the worker tmux session
   help               Show this help
@@ -33,12 +35,14 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     let value: unknown;
     if (command === "spawn") {
       const task = argv.slice(1).join(" "); if (!task) throw new Error("spawn requires a task");
-      value = await manager.spawn({ task });
+      value = await manager.spawn(await resolveLaunch(process.cwd(), task));
     } else if (command === "send" || command === "steer") {
       if (!id || argv.length < 3) throw new Error(`${command} requires <id> <text>`);
       value = { id, seq: await manager[command](id, argv.slice(2).join(" ")) };
     } else if (command === "stop") {
       if (!id) throw new Error("stop requires <id>"); value = { id, seq: await manager.stop(id) };
+    } else if (command === "delete") {
+      if (!id) throw new Error("delete requires <id>"); await manager.delete(id); value = { id, deleted: true };
     } else if (command === "status") {
       if (!id) throw new Error("status requires <id>"); value = await manager.status(id);
     } else if (command === "result") {

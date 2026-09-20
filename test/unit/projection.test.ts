@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { eventActivity, projectWorker, recentActivity } from "../../src/extension/projection.js";
+import { eventActivity, modelSelectionLabel, projectWorker, recentActivity } from "../../src/extension/projection.js";
 import type { WorkerEvent, WorkerState } from "../../src/protocol/types.js";
 import { workerId } from "../../src/types.js";
 
@@ -15,6 +15,18 @@ describe("worker activity projection", () => {
 
   it.each(["running", "waiting", "completed", "failed", "stopped", "orphaned"] as const)("represents %s workers", (status) => {
     expect(projectWorker({ state: state(status) }, Date.parse("2026-01-01T00:01:00Z"))).toMatchObject({ id: "worker-1", status, turn: 2 });
+  });
+
+  it("shows provider, model, and thinking, preferring the active RPC selection", () => {
+    expect(modelSelectionLabel({ provider: "openai-codex", model: "gpt-5.6-sol", thinking: "low" })).toBe("openai-codex/gpt-5.6-sol-low");
+    expect(projectWorker({
+      state: state(),
+      meta: {
+        version: 1, id: workerId("worker-1"), tmuxSession: "pi-sa-worker-1", createdAt: "2026-01-01T00:00:00Z", cwd: "/tmp",
+        launch: { task: "task", provider: "configured", model: "configured" },
+        activeModel: { provider: "openai-codex", model: "gpt-5.6-sol", thinking: "low" },
+      },
+    })).toMatchObject({ provider: "openai-codex", model: "gpt-5.6-sol", thinking: "low", modelLabel: "openai-codex/gpt-5.6-sol-low" });
   });
 
   it("is deterministic, bounded, and combines command and event history", () => {

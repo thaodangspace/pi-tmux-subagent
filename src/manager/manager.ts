@@ -80,6 +80,15 @@ export class Manager {
   result(id: string): Promise<WorkerResult | undefined> { return this.store.readResult(workerId(id)); }
   async list(): Promise<WorkerState[]> { return new Recovery(this.store, this.tmux, this.recoveryOptions).scan(); }
   async recover(id: string): Promise<WorkerState> { return new Recovery(this.store, this.tmux, this.recoveryOptions).recover(id); }
+  async delete(id: string): Promise<void> {
+    const value = workerId(id);
+    const state = await this.status(value);
+    if (state.status !== "completed" && state.status !== "failed" && state.status !== "stopped" && state.status !== "orphaned") {
+      throw new SubagentError("WORKER_ACTIVE", `Cannot delete active worker ${value} (${state.status}); stop it first`);
+    }
+    await this.tmux.terminate(value).catch(() => undefined);
+    await this.store.delete(value);
+  }
   attach(id: string): Promise<void> { return this.tmux.attach(workerId(id)); }
   async forceTerminate(id: string): Promise<void> { await this.tmux.terminate(workerId(id)); }
 }

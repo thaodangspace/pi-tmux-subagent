@@ -1,4 +1,5 @@
 import { readdir, readFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
 import type { LaunchConfig, WorkspaceMode } from "../protocol/types.js";
@@ -6,6 +7,7 @@ import { SubagentError } from "../types.js";
 
 export interface AgentDefinition {
   name: string;
+  provider?: string;
   model?: string;
   thinking?: string;
   tools?: string[];
@@ -14,6 +16,39 @@ export interface AgentDefinition {
   maxDepth?: number;
   systemPrompt: string;
   path: string;
+}
+
+export interface ModelSelection { provider: string; model: string; thinking?: string }
+export interface AgentConfig {
+  models: ModelSelection[];
+  default?: ModelSelection;
+}
+
+function isSelection(value: unknown): value is ModelSelection {
+  return Boolean(value && typeof value === "object" && typeof (value as any).provider === "string" && (value as any).provider.trim() && typeof (value as any).model === "string" && (value as any).model.trim() && ((value as any).thinking === undefined || (typeof (value as any).thinking === "string" && (value as any).thinking.trim())));
+}
+
+async function readAgentConfig(path: string): Promise<AgentConfig | undefined> {
+  let source: string;
+  try { source = await readFile(path, "utf8"); }
+  catch (error: any) { if (error.code === "ENOENT") return undefined; throw error; }
+  let data: unknown;
+  try { data = JSON.parse(source); }
+  catch (error) { throw new SubagentError("INVALID_AGENT_CONFIG", `${path}: invalid JSON`, error); }
+  if (!data || typeof data !== "object" || !Array.isArray((data as any).models) || !(data as any).models.length || !(data as any).models.every(isSelection)) {
+    throw new SubagentError("INVALID_AGENT_CONFIG", `${path}: models must be a non-empty list of provider/model objects`);
+  }
+  const models = (data as any).models as ModelSelection[];
+  const defaultSelection = (data as any).default;
+  if (defaultSelection !== undefined && (!isSelection(defaultSelection) || !models.some((entry) => entry.provider === defaultSelection.provider && entry.model === defaultSelection.model))) {
+    throw new SubagentError("INVALID_AGENT_CONFIG", `${path}: default must be included in models`);
+  }
+  return { models, ...(defaultSelection ? { default: defaultSelection } : {}) };
+}
+
+export async function loadAgentConfig(cwd: string): Promise<AgentConfig | undefined> {
+  return await readAgentConfig(join(cwd, ".pi", "agent", "sub-agents.json"))
+    ?? await readAgentConfig(join(homedir(), ".pi", "agent", "sub-agents.json"));
 }
 
 export async function discoverAgents(cwd: string): Promise<Map<string, AgentDefinition>> {
@@ -54,6 +89,7 @@ export function parseAgent(source: string, path = "<agent>"): AgentDefinition {
     name: data.name,
     systemPrompt: match[2]!.trim(),
     path,
+    ...(typeof data.provider === "string" ? { provider: data.provider } : {}),
     ...(typeof data.model === "string" ? { model: data.model } : {}),
     ...(typeof data.thinking === "string" ? { thinking: data.thinking } : {}),
     ...(tools ? { tools } : {}),
@@ -75,11 +111,23 @@ export async function resolveLaunch(cwd: string, task: string, agentName?: strin
       name: found.name,
       systemPrompt: found.systemPrompt,
       maxDepth: found.spawning ? (found.maxDepth ?? parentMaxDepth) : 0,
+      ...(found.provider ? { provider: found.provider } : {}),
       ...(found.model ? { model: found.model } : {}),
       ...(found.thinking ? { thinking: found.thinking } : {}),
       ...(found.tools ? { tools: found.tools } : {}),
       ...(found.workspace ? { workspace: found.workspace } : {}),
     };
   }
-  return Object.fromEntries(Object.entries({ ...base, task, ...overrides }).filter(([, value]) => value !== undefined)) as unknown as LaunchConfig;
+  const config = await loadAgentConfig(cwd);
+  const launch = Object.fromEntries(Object.entries({ ...base, task, ...overrides }).filter(([, value]) => value !== undefined)) as unknown as LaunchConfig;
+  if (!launch.model && !launch.provider && config?.default) {
+    launch.provider = config.default.provider;
+    launch.model = config.default.model;
+  }
+  const configuredModel = config?.models.find((entry) => entry.provider === launch.provider && entry.model === launch.model);
+  if (config && (launch.model || launch.provider) && !configuredModel) {
+    throw new SubagentError("MODEL_NOT_ALLOWED", `Provider/model is not allowed by sub-agents.json: ${launch.provider ?? "<missing>"}/${launch.model ?? "<missing>"}`);
+  }
+  if (!launch.thinking && configuredModel?.thinking) launch.thinking = configuredModel.thinking;
+  return launch;
 }

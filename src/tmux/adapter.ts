@@ -38,14 +38,23 @@ export class TmuxAdapter {
   async available(): Promise<boolean> {
     try { return (await this.exec("tmux", ["-V"])).code === 0; } catch { return false; }
   }
+  private async paneTarget(id: WorkerId | string): Promise<string | undefined> {
+    const result = await this.exec("tmux", ["list-panes", "-a", "-F", "#{pane_id}\t#{@pi_tmux_subagent_id}"]);
+    if (result.code !== 0) return undefined;
+    const match = result.stdout.split("\n").map((line) => line.split("\t")).find(([, worker]) => worker === id);
+    return match?.[0];
+  }
   async exists(id: WorkerId | string): Promise<boolean> {
     const result = await this.exec("tmux", ["has-session", "-t", `=${sessionName(id)}`]);
-    return result.code === 0;
+    return result.code === 0 || Boolean(await this.paneTarget(id));
   }
   async list(): Promise<string[]> {
-    const result = await this.exec("tmux", ["list-sessions", "-F", "#{session_name}"]);
-    if (result.code !== 0) return [];
-    return result.stdout.split("\n").filter((name) => name.startsWith("pi-sa-"));
+    const sessions = await this.exec("tmux", ["list-sessions", "-F", "#{session_name}"]);
+    const panes = await this.exec("tmux", ["list-panes", "-a", "-F", "#{@pi_tmux_subagent_id}"]);
+    return [...new Set([
+      ...(sessions.code === 0 ? sessions.stdout.split("\n").filter((name) => name.startsWith("pi-sa-")).map((name) => name.slice(6)) : []),
+      ...(panes.code === 0 ? panes.stdout.split("\n").filter(Boolean) : []),
+    ])].map((id) => sessionName(id));
   }
   async create(
     id: WorkerId | string,
@@ -66,16 +75,34 @@ export class TmuxAdapter {
       "PI_TMUX_DEPTH",
       "PI_TMUX_MAX_DEPTH",
     ].flatMap((key) => allEnv[key] === undefined ? [] : ["-e", `${key}=${allEnv[key]}`]);
+    if (process.env.TMUX && process.env.TMUX_PANE) {
+      const result = await this.exec("tmux", ["split-window", "-d", "-P", "-F", "#{pane_id}", "-t", process.env.TMUX_PANE, "-c", cwd, ...environment, node, runnerFile, runDir]);
+      if (result.code !== 0) throw new SubagentError("TMUX_CREATE_FAILED", result.stderr.trim() || `Could not create pane for ${name}`);
+      const pane = result.stdout.trim();
+      const tagged = await this.exec("tmux", ["set-option", "-p", "-t", pane, "@pi_tmux_subagent_id", String(id)]);
+      if (tagged.code !== 0) {
+        await this.exec("tmux", ["kill-pane", "-t", pane]);
+        throw new SubagentError("TMUX_CREATE_FAILED", tagged.stderr.trim() || `Could not tag pane for ${name}`);
+      }
+      return pane;
+    }
     const result = await this.exec("tmux", ["new-session", "-d", "-s", name, "-c", cwd, ...environment, node, runnerFile, runDir]);
     if (result.code !== 0) throw new SubagentError("TMUX_CREATE_FAILED", result.stderr.trim() || `Could not create ${name}`);
     return name;
   }
-  attachArgs(id: WorkerId | string): string[] { return ["attach-session", "-t", `=${sessionName(id)}`]; }
+  attachArgs(id: WorkerId | string, target = `=${sessionName(id)}`): string[] { return ["attach-session", "-t", target]; }
   async attach(id: WorkerId | string): Promise<void> {
-    const code = await this.interactiveExec("tmux", this.attachArgs(id));
+    const target = await this.paneTarget(id) ?? `=${sessionName(id)}`;
+    const code = await this.interactiveExec("tmux", this.attachArgs(id, target));
     if (code !== 0) throw new SubagentError("TMUX_ATTACH_FAILED", `tmux attach failed with exit code ${code}`);
   }
   async terminate(id: WorkerId | string): Promise<void> {
+    const pane = await this.paneTarget(id);
+    if (pane) {
+      const result = await this.exec("tmux", ["kill-pane", "-t", pane]);
+      if (result.code !== 0) throw new SubagentError("TMUX_TERMINATE_FAILED", result.stderr.trim());
+      return;
+    }
     const result = await this.exec("tmux", ["kill-session", "-t", `=${sessionName(id)}`]);
     if (result.code !== 0 && !/can't find session/i.test(result.stderr)) throw new SubagentError("TMUX_TERMINATE_FAILED", result.stderr.trim());
   }

@@ -112,6 +112,7 @@ export class ProtocolStore {
   async readMeta(id: WorkerId | string): Promise<WorkerMeta> { return this.readJson(id, "meta.json"); }
   async readState(id: WorkerId | string): Promise<WorkerState> { return this.readJson(id, "state.json"); }
   async readResult(id: WorkerId | string): Promise<WorkerResult | undefined> { try { return await this.readJson(id, "result.json"); } catch (error: any) { if (error.code === "ENOENT") return undefined; throw error; } }
+  async delete(id: WorkerId | string): Promise<void> { await rm(this.dir(id), { recursive: true, force: true }); }
   private async readJson<T>(id: WorkerId | string, file: string): Promise<T> { return JSON.parse(await readFile(this.path(id, file), "utf8")) as T; }
   async readLog<T extends { seq: number }>(id: WorkerId | string, name: LogName, fromSeq = 1): Promise<T[]> {
     const text = await readFile(this.path(id, `${name}.jsonl`), "utf8");

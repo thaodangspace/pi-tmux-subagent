@@ -7,7 +7,7 @@ function setup(action: string, message = "do it") {
   const meta = { version: 1 as const, id: workerId("worker-1"), tmuxSession: "pi-sa-worker-1", createdAt: "2026-01-01T00:00:00Z", cwd: "/tmp/project", launch: { task: "task", name: "worker" } };
   const manager = {
     list: vi.fn(async () => [state]), status: vi.fn(async () => state), result: vi.fn(async () => undefined),
-    send: vi.fn(async () => 2), steer: vi.fn(async () => 2), stop: vi.fn(async () => 2),
+    send: vi.fn(async () => 2), steer: vi.fn(async () => 2), stop: vi.fn(async () => 2), delete: vi.fn(async () => undefined),
     store: { readMeta: vi.fn(async () => meta), readLog: vi.fn(async () => []), readResult: vi.fn(async () => undefined) },
   };
   const select = vi.fn().mockResolvedValueOnce("worker  waiting  turn 1").mockResolvedValueOnce(action);
@@ -26,6 +26,12 @@ describe("subagent controls", () => {
     await openSubagentsControl(manager as any, ctx as any);
     expect(ctx.ui.confirm).toHaveBeenCalled();
     expect(manager.stop).toHaveBeenCalledWith("worker-1");
+  });
+  it("requires confirmation and deletes stored worker data", async () => {
+    const { manager, ctx } = setup("Delete");
+    await openSubagentsControl(manager as any, ctx as any);
+    expect(ctx.ui.confirm).toHaveBeenCalled();
+    expect(manager.delete).toHaveBeenCalledWith("worker-1");
   });
   it("reports stale or missing workers without throwing", async () => {
     const { manager, ctx } = setup("Close");

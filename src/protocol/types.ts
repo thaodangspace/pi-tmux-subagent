@@ -4,7 +4,8 @@ export const PROTOCOL_VERSION = 1 as const;
 export type WorkerStatus = "starting" | "running" | "waiting" | "completed" | "failed" | "stopped" | "orphaned";
 export type WorkspaceMode = "current" | "worktree";
 export interface WorkspaceMetadata { mode: WorkspaceMode; root: string; branch?: string; worktree?: string; commit?: string; changedFiles?: string[] }
-export interface LaunchConfig { task: string; name?: string; model?: string; thinking?: string; tools?: string[]; systemPrompt?: string; workspace?: WorkspaceMode; depth?: number; maxDepth?: number; rpcArgs?: string[] }
+export interface ActiveModelSelection { provider?: string; model?: string; thinking?: string }
+export interface LaunchConfig { task: string; name?: string; provider?: string; model?: string; thinking?: string; tools?: string[]; systemPrompt?: string; workspace?: WorkspaceMode; depth?: number; maxDepth?: number; rpcArgs?: string[] }
 export interface WorkerMeta {
   version: 1;
   id: WorkerId;
@@ -18,6 +19,7 @@ export interface WorkerMeta {
   workspace?: WorkspaceMetadata;
   piSessionId?: string;
   piSessionFile?: string;
+  activeModel?: ActiveModelSelection;
 }
 export type WorkerCommand =
   | { version: 1; seq: number; at: string; type: "prompt" | "send" | "steer"; text: string }

@@ -38,7 +38,8 @@ export class ActivityWatcher {
   }
   private async performRefresh(): Promise<void> {
     try {
-      const views = await loadWorkerViews(this.manager);
+      const allViews = await loadWorkerViews(this.manager, Date.now(), this.ctx.cwd);
+      const views = allViews.filter((view) => view.status === "running" || view.status === "waiting" || view.status === "failed");
       const next = meaningfulFingerprint(views);
       if (next !== this.fingerprint) {
         this.fingerprint = next;
@@ -51,7 +52,7 @@ export class ActivityWatcher {
 function meaningfulFingerprint(views: WorkerActivityView[]): string {
   return JSON.stringify(views.map((view) => ({
     id: view.id, name: view.name, status: view.status, turn: view.turn,
-    startedAt: view.startedAt, updatedAt: view.updatedAt,
+    modelLabel: view.modelLabel, startedAt: view.startedAt, updatedAt: view.updatedAt,
     latestActivity: view.latestActivity, latestActivityKind: view.latestActivityKind,
   })));
 }

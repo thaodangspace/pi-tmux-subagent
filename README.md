@@ -2,7 +2,7 @@
 
 Durable Pi RPC workers supervised by tmux. The package provides a standalone CLI and a Pi extension with one `subagent` tool.
 
-Unlike interactive multiplexer orchestration, tmux here is only a process supervisor and human inspection surface. Commands and events travel through append-only JSONL files; the manager never scrapes panes and never uses `tmux send-keys`.
+Unlike interactive multiplexer orchestration, tmux here is only a process supervisor and human inspection surface. Commands and events travel through append-only JSONL files; the manager never scrapes panes and never uses `tmux send-keys`. When spawned from inside tmux, a worker runs in a detached pane in the current window. Outside tmux, it runs in its own detached session.
 
 ## Requirements
 
@@ -36,19 +36,20 @@ pi-tmux-subagent steer <id> "focus on OAuth"
 pi-tmux-subagent result <id>
 pi-tmux-subagent attach <id>
 pi-tmux-subagent stop <id>
+pi-tmux-subagent delete <id>
 ```
 
 Output is JSON. Set `PI_TMUX_REGISTRY` to override the default `~/.pi/tmux-subagents` registry.
 
 ## Pi extension
 
-The `subagent` tool supports `spawn`, `send`, `steer`, `status`, `result`, `stop`, and `list`. Human commands are:
+The `subagent` tool supports `spawn`, `send`, `steer`, `status`, `result`, `stop`, `delete`, and `list`. Deletion is limited to terminal workers and permanently removes their registry directory. Human commands are:
 
-- `/subagents` — open the worker selector and send, steer, stop, or inspect a worker
+- `/subagents` — open the complete worker selector to send, steer, stop, inspect, or delete a terminal worker
 - `/subagent-inspect <id>` — show bounded durable activity, result, and worktree metadata
 - `/subagent-attach <id>` — print a safe attach command for another terminal
 
-In interactive Pi sessions, a compact Subagents widget remains below the editor and refreshes as durable worker state changes:
+In interactive Pi sessions, a compact Subagents widget remains below the editor, shows `running`, `waiting`, and `failed` workers, and refreshes as durable worker state changes:
 
 ```text
 Subagents  2 agents
@@ -65,7 +66,8 @@ Agent definitions live at `.pi/agents/<name>.md`:
 ```markdown
 ---
 name: worker
-model: anthropic/claude-sonnet-4-5
+provider: anthropic
+model: claude-sonnet-4-5
 thinking: low
 tools: read, grep, find, bash
 workspace: worktree
@@ -75,6 +77,20 @@ Implement the requested change and report concise evidence.
 ```
 
 Explicit spawn options override definition fields. Recursive spawning is disabled for definitions by default (`maxDepth: 0`) and unnamed workers default to a maximum depth of one.
+
+To restrict workers to approved provider/model pairs, add `.pi/agent/sub-agents.json`:
+
+```json
+{
+  "models": [
+    { "provider": "anthropic", "model": "claude-sonnet-4-5", "thinking": "high" },
+    { "provider": "openai-codex", "model": "gpt-5.6-sol", "thinking": "low" }
+  ],
+  "default": { "provider": "openai-codex", "model": "gpt-5.6-sol" }
+}
+```
+
+The same file may be placed globally at `~/.pi/agent/sub-agents.json`. A project-local file completely overrides the global file. When a configuration exists, `models` must be a non-empty list. Provider/model pairs supplied by the tool or an agent definition must appear in that list. Each entry may provide a default `thinking` level. An explicit spawn or agent-definition thinking level overrides it. The optional `default` must also appear in the list and is used when a spawn specifies neither provider nor model.
 
 ## Durability and recovery
 

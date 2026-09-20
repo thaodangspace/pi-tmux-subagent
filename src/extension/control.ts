@@ -5,14 +5,14 @@ import { loadWorkerViews } from "./widget.js";
 
 export async function openSubagentsControl(manager: Manager, ctx: ExtensionCommandContext): Promise<void> {
   if (!ctx.hasUI || ctx.mode !== "tui") {
-    const workers = await manager.list();
-    ctx.ui.notify(workers.length ? workers.map((worker) => `${worker.id}  ${worker.status}`).join("\n") : "No subagents", "info");
+    const workers = await loadWorkerViews(manager, Date.now(), ctx.cwd);
+    ctx.ui.notify(workers.length ? workers.map((worker) => `${worker.id}  ${worker.status}${worker.modelLabel ? `  ${worker.modelLabel}` : ""}`).join("\n") : "No subagents", "info");
     return;
   }
   try {
-    const views = await loadWorkerViews(manager);
+    const views = await loadWorkerViews(manager, Date.now(), ctx.cwd);
     if (!views.length) { ctx.ui.notify("No subagents", "info"); return; }
-    const labels = views.map((view) => `${view.name ?? view.id}  ${view.status}  turn ${view.turn}`);
+    const labels = views.map((view) => `${view.name ?? view.id}  ${view.status}  turn ${view.turn}${view.modelLabel ? `  ${view.modelLabel}` : ""}`);
     const selectedLabel = await ctx.ui.select("Select a subagent", labels);
     if (!selectedLabel) return;
     const selected = views[labels.indexOf(selectedLabel)];
@@ -22,11 +22,16 @@ export async function openSubagentsControl(manager: Manager, ctx: ExtensionComma
     const detail = [
       `${meta.launch.name ?? selected.id} (${selected.id})`,
       `status: ${state.status} · turn ${state.turn}`,
+      selected.modelLabel ? `model: ${selected.modelLabel}` : undefined,
       `cwd: ${meta.cwd}`,
       selected.latestActivity ? `activity: ${selected.latestActivity}` : undefined,
       result?.text ? `result: ${bounded(result.text)}` : undefined,
     ].filter(Boolean).join("\n");
-    const action = await ctx.ui.select(detail, ["Send follow-up", "Steer", "Stop", "Inspect / attach", "Close"]);
+    const terminal = state.status === "completed" || state.status === "failed" || state.status === "stopped" || state.status === "orphaned";
+    const actions = terminal
+      ? ["Inspect / attach", "Delete", "Close"]
+      : ["Send follow-up", "Steer", "Stop", "Inspect / attach", "Close"];
+    const action = await ctx.ui.select(detail, actions);
     if (action === "Send follow-up" || action === "Steer") {
       const message = await ctx.ui.input(action, "Instruction for the worker");
       if (!message) return;
@@ -39,6 +44,11 @@ export async function openSubagentsControl(manager: Manager, ctx: ExtensionComma
       }
     } else if (action === "Inspect / attach") {
       ctx.ui.notify(await inspectWorker(manager, selected.id), "info");
+    } else if (action === "Delete") {
+      if (await ctx.ui.confirm("Delete subagent?", `Permanently delete all stored data for ${selected.id}?`)) {
+        await manager.delete(selected.id);
+        ctx.ui.notify(`Deleted ${selected.id}`, "warning");
+      }
     }
   } catch (error) {
     ctx.ui.notify(`Subagent action failed: ${error instanceof Error ? error.message : String(error)}`, "error");
