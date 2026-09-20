@@ -2,6 +2,7 @@ import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Manager } from "../manager/manager.js";
+import { resolveLaunch } from "../agents/discover.js";
 
 const subagentSchema = Type.Object({
   action: StringEnum(["spawn", "send", "steer", "status", "result", "stop", "list"] as const),
@@ -18,7 +19,7 @@ export function registerSubagentTool(pi: ExtensionAPI, manager = new Manager()):
     async execute(_id, input, signal, onUpdate, ctx) {
       signal?.throwIfAborted(); onUpdate?.({ content: [{ type: "text", text: `${input.action}…` }], details: {} });
       let value: unknown;
-      if (input.action === "spawn") value = await manager.spawn({ task: requireValue(input.task, "task"), ...(input.name ? { name: input.name } : {}), ...(input.model ? { model: input.model } : {}), ...(input.thinking ? { thinking: input.thinking } : {}), ...(input.workspace ? { workspace: input.workspace } : {}) }, ctx.cwd);
+      if (input.action === "spawn") value = await manager.spawn(await resolveLaunch(ctx.cwd, requireValue(input.task, "task"), input.agent, { ...(input.name ? { name: input.name } : {}), ...(input.model ? { model: input.model } : {}), ...(input.thinking ? { thinking: input.thinking } : {}), ...(input.workspace ? { workspace: input.workspace } : {}) }), ctx.cwd);
       else if (input.action === "send") value = { id: input.id, seq: await manager.send(requireValue(input.id, "id"), requireValue(input.message, "message")) };
       else if (input.action === "steer") value = { id: input.id, seq: await manager.steer(requireValue(input.id, "id"), requireValue(input.message, "message")) };
       else if (input.action === "status") value = await manager.recover(requireValue(input.id, "id"));
