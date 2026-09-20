@@ -36,11 +36,12 @@ export class TmuxAdapter {
     if (result.code !== 0) return [];
     return result.stdout.split("\n").filter((name) => name.startsWith("pi-sa-"));
   }
-  async create(id: WorkerId | string, runDir: string, runnerFile: string, node = process.execPath): Promise<string> {
+  async create(id: WorkerId | string, runDir: string, runnerFile: string, node = process.execPath, cwd = runDir): Promise<string> {
     await access(runnerFile);
     const name = sessionName(id);
     if (await this.exists(id)) throw new SubagentError("SESSION_EXISTS", `tmux session already exists: ${name}`);
-    const result = await this.exec("tmux", ["new-session", "-d", "-s", name, "-c", runDir, node, runnerFile, runDir]);
+    const environment = ["PI_TMUX_REGISTRY", "PI_TMUX_RPC_COMMAND", "PI_TMUX_RPC_ARGS"].flatMap((key) => process.env[key] === undefined ? [] : ["-e", `${key}=${process.env[key]}`]);
+    const result = await this.exec("tmux", ["new-session", "-d", "-s", name, "-c", cwd, ...environment, node, runnerFile, runDir]);
     if (result.code !== 0) throw new SubagentError("TMUX_CREATE_FAILED", result.stderr.trim() || `Could not create ${name}`);
     return name;
   }

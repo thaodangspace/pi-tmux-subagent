@@ -9,7 +9,7 @@ import { WorktreeAdapter } from "../worktree/adapter.js";
 
 export interface RunnerOptions { pollMs?: number; heartbeatMs?: number; rpcCommand?: string; rpcArgs?: string[]; output?: NodeJS.WritableStream }
 export class Runner {
-  private stopped = false; private latestText = ""; private heartbeat?: NodeJS.Timeout;
+  private stopped = false; private latestText = ""; private heartbeat?: NodeJS.Timeout; private recordQueue: Promise<void> = Promise.resolve();
   private readonly store: ProtocolStore; private readonly id: WorkerId; private rpc!: RpcClient;
   constructor(private readonly runDir: string, private readonly options: RunnerOptions = {}) {
     const parts = runDir.split(/[\\/]/); this.id = parts[parts.length - 1] as WorkerId;
@@ -57,9 +57,12 @@ export class Runner {
       await this.store.writeResult({ version: 1, id: this.id, text: this.latestText, completedAt: new Date().toISOString(), eventSeq: state.lastEventSeq, ...(workspace ? { workspace } : {}) });
     }
   }
-  private async record(value: Omit<WorkerEvent, "version" | "seq" | "at">): Promise<void> {
-    const event = await this.store.appendEvent(this.id, value); const current = await this.store.readState(this.id);
-    await this.store.writeState(reduceEvents(current, [event]));
+  private record(value: Omit<WorkerEvent, "version" | "seq" | "at">): Promise<void> {
+    const operation = this.recordQueue.then(async () => {
+      const event = await this.store.appendEvent(this.id, value); const current = await this.store.readState(this.id);
+      await this.store.writeState(reduceEvents(current, [event]));
+    });
+    this.recordQueue = operation.catch(() => undefined); return operation;
   }
   private async fail(error: unknown): Promise<void> { await this.record({ type: "failed", data: error instanceof Error ? error.message : error }); this.stopped = true; }
 }

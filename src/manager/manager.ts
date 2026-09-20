@@ -23,7 +23,7 @@ export class Manager {
     const meta: WorkerMeta = { version: 1, id, tmuxSession: sessionName(id), createdAt: new Date().toISOString(), cwd: workerCwd, launch: config, workspace };
     const state: WorkerState = { version: 1, id, status: "starting", turn: 0, lastCommandSeq: 0, lastEventSeq: 0 };
     await this.store.create(meta, state); await this.store.appendCommand(id, { type: "prompt", text: config.task });
-    try { await this.tmux.create(id, workerCwd, this.runnerFile); } catch (error) {
+    try { await this.tmux.create(id, this.store.dir(id), this.runnerFile, process.execPath, workerCwd); } catch (error) {
       const event = await this.store.appendEvent(id, { type: "failed", data: error instanceof Error ? error.message : error });
       const failed = { ...state, status: "failed" as const, lastEventSeq: event.seq, lastEventAt: event.at }; await this.store.writeState(failed); throw error;
     }
@@ -33,7 +33,7 @@ export class Manager {
   async steer(id: string, text: string): Promise<number> { return (await this.store.appendCommand(workerId(id), { type: "steer", text })).seq; }
   async abort(id: string): Promise<number> { return (await this.store.appendCommand(workerId(id), { type: "abort" })).seq; }
   async stop(id: string): Promise<number> { return (await this.store.appendCommand(workerId(id), { type: "stop" })).seq; }
-  status(id: string): Promise<WorkerState> { return this.store.readState(workerId(id)); }
+  status(id: string): Promise<WorkerState> { return new Recovery(this.store, this.tmux).recover(id); }
   result(id: string): Promise<WorkerResult | undefined> { return this.store.readResult(workerId(id)); }
   async list(): Promise<WorkerState[]> { return new Recovery(this.store, this.tmux).scan(); }
   async recover(id: string): Promise<WorkerState> { return new Recovery(this.store, this.tmux).recover(id); }
