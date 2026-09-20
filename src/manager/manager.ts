@@ -3,7 +3,8 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Recovery, type RecoveryOptions } from "./recovery.js";
 import { ProtocolStore } from "../protocol/store.js";
-import type { LaunchConfig, WorkerMeta, WorkerResult, WorkerState } from "../protocol/types.js";
+import { completionSummary } from "../protocol/completion.js";
+import type { LaunchConfig, WorkerCompletion, WorkerMeta, WorkerResult, WorkerState } from "../protocol/types.js";
 import { TmuxAdapter } from "../tmux/adapter.js";
 import { sessionName } from "../tmux/adapter.js";
 import { SubagentError, workerId, type WorkerId } from "../types.js";
@@ -67,6 +68,17 @@ export class Manager {
       const event = await this.store.appendEvent(id, { type: "failed", data: error instanceof Error ? error.message : error });
       const failed = { ...state, status: "failed" as const, lastEventSeq: event.seq, lastEventAt: event.at };
       await this.store.writeState(failed);
+      await this.store.writeCompletion({
+        version: 1,
+        id,
+        turn: failed.turn,
+        commandSeq: 1,
+        resultSeq: event.seq,
+        status: "failed",
+        summary: completionSummary(error instanceof Error ? error.message : String(error)),
+        hasDetails: false,
+        completedAt: event.at,
+      });
       throw error;
     }
     return state;
@@ -78,6 +90,7 @@ export class Manager {
   async stop(id: string): Promise<number> { return (await this.store.appendCommand(workerId(id), { type: "stop" })).seq; }
   status(id: string): Promise<WorkerState> { return new Recovery(this.store, this.tmux, this.recoveryOptions).recover(id); }
   result(id: string): Promise<WorkerResult | undefined> { return this.store.readResult(workerId(id)); }
+  completion(id: string): Promise<WorkerCompletion | undefined> { return this.store.readCompletion(workerId(id)); }
   async list(): Promise<WorkerState[]> { return new Recovery(this.store, this.tmux, this.recoveryOptions).scan(); }
   async recover(id: string): Promise<WorkerState> { return new Recovery(this.store, this.tmux, this.recoveryOptions).recover(id); }
   async delete(id: string): Promise<void> {

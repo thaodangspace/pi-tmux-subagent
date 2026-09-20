@@ -2,6 +2,7 @@ export * from "./types.js";
 export * from "./protocol/types.js";
 export * from "./protocol/store.js";
 export * from "./protocol/state.js";
+export * from "./protocol/completion.js";
 export * from "./manager/manager.js";
 export * from "./manager/recovery.js";
 export * from "./tmux/adapter.js";

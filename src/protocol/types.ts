@@ -33,6 +33,21 @@ export interface WorkerResult {
   commandSeq?: number;
   text: string;
   completedAt: string;
+  /** Sequence of the event that finalized this result. */
+  resultSeq?: number;
+  /** @deprecated Use resultSeq. Kept for result.json backward compatibility. */
   eventSeq: number;
   workspace?: WorkspaceMetadata;
+}
+export interface WorkerCompletion {
+  version: 1;
+  id: WorkerId;
+  turn: number;
+  commandSeq?: number;
+  /** Event sequence that finalized the result or failure. */
+  resultSeq: number;
+  status: "completed" | "failed";
+  summary: string;
+  hasDetails: boolean;
+  completedAt: string;
 }

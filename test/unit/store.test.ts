@@ -79,6 +79,21 @@ describe("protocol store", () => {
     expect(commands[0].seq).toBe(1);
   });
 
+  it("durably reads completed and failed notifications after restart", async () => {
+    const { store, id } = await fixture();
+    await store.writeCompletion({
+      version: 1, id, turn: 1, commandSeq: 1, resultSeq: 7,
+      status: "completed", summary: "done", hasDetails: true, completedAt: "2026-01-01T00:00:00Z",
+    });
+    expect(await new ProtocolStore(store.root).readCompletion(id)).toMatchObject({ status: "completed", resultSeq: 7 });
+
+    await store.writeCompletion({
+      version: 1, id, turn: 2, commandSeq: 2, resultSeq: 9,
+      status: "failed", summary: "RPC exited", hasDetails: false, completedAt: "2026-01-01T00:01:00Z",
+    });
+    expect(await new ProtocolStore(store.root).readCompletion(id)).toMatchObject({ status: "failed", summary: "RPC exited", resultSeq: 9 });
+  });
+
   it("supports reading log with fromSeq cursor", async () => {
     const { store, id } = await fixture();
     for (let i = 1; i <= 5; i++) {

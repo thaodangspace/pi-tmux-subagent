@@ -1,7 +1,8 @@
 import { ProtocolStore } from "../protocol/store.js";
 import { assistantText } from "../protocol/events.js";
 import { reduceEvents } from "../protocol/state.js";
-import type { WorkerCommand, WorkerEvent } from "../protocol/types.js";
+import { completedNotification, completionSummary } from "../protocol/completion.js";
+import type { WorkerCommand, WorkerEvent, WorkerResult } from "../protocol/types.js";
 import { RpcClient } from "./rpc-client.js";
 import { renderRpcEvent } from "./renderer.js";
 import type { WorkerId } from "../types.js";
@@ -186,16 +187,20 @@ export class Runner {
       const workspace = meta.workspace?.mode === "worktree"
         ? await new WorktreeAdapter().inspect(meta.workspace).catch(() => meta.workspace)
         : meta.workspace;
-      await this.store.writeResult({
+      const result: WorkerResult = {
         version: 1,
         id: this.id,
         turn: this.currentTurn,
         ...(this.activeCommandSeq !== undefined ? { commandSeq: this.activeCommandSeq } : {}),
         text: this.turnText,
         completedAt: new Date().toISOString(),
+        resultSeq: state.lastEventSeq,
         eventSeq: state.lastEventSeq,
         ...(workspace ? { workspace } : {}),
-      });
+      };
+      // The complete response is durable before its compact notification is published.
+      await this.store.writeResult(result);
+      await this.store.writeCompletion(completedNotification(result));
     }
   }
 
@@ -210,7 +215,20 @@ export class Runner {
   }
 
   private async fail(error: unknown): Promise<void> {
-    await this.record({ type: "failed", data: error instanceof Error ? error.message : error });
+    const message = error instanceof Error ? error.message : String(error);
+    await this.record({ type: "failed", data: message });
+    const state = await this.store.readState(this.id);
+    await this.store.writeCompletion({
+      version: 1,
+      id: this.id,
+      turn: state.turn,
+      ...(this.activeCommandSeq !== undefined ? { commandSeq: this.activeCommandSeq } : {}),
+      resultSeq: state.lastEventSeq,
+      status: "failed",
+      summary: completionSummary(message || "Worker failed."),
+      hasDetails: false,
+      completedAt: state.lastEventAt ?? new Date().toISOString(),
+    });
     this.stopped = true;
   }
 }

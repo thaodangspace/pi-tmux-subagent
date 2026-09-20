@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { SubagentError, workerId, type WorkerId } from "../types.js";
-import type { WorkerCommand, WorkerEvent, WorkerMeta, WorkerResult, WorkerState } from "./types.js";
+import type { WorkerCommand, WorkerCompletion, WorkerEvent, WorkerMeta, WorkerResult, WorkerState } from "./types.js";
 
 export const DEFAULT_REGISTRY_ROOT = join(homedir(), ".pi", "tmux-subagents");
 export type LogName = "commands" | "events";
@@ -109,9 +109,11 @@ export class ProtocolStore {
   async writeMeta(value: WorkerMeta): Promise<void> { await atomicJson(this.path(value.id, "meta.json"), value); }
   async writeState(value: WorkerState): Promise<void> { await atomicJson(this.path(value.id, "state.json"), value); }
   async writeResult(value: WorkerResult): Promise<void> { await atomicJson(this.path(value.id, "result.json"), value); }
+  async writeCompletion(value: WorkerCompletion): Promise<void> { await atomicJson(this.path(value.id, "completion.json"), value); }
   async readMeta(id: WorkerId | string): Promise<WorkerMeta> { return this.readJson(id, "meta.json"); }
   async readState(id: WorkerId | string): Promise<WorkerState> { return this.readJson(id, "state.json"); }
   async readResult(id: WorkerId | string): Promise<WorkerResult | undefined> { try { return await this.readJson(id, "result.json"); } catch (error: any) { if (error.code === "ENOENT") return undefined; throw error; } }
+  async readCompletion(id: WorkerId | string): Promise<WorkerCompletion | undefined> { try { return await this.readJson(id, "completion.json"); } catch (error: any) { if (error.code === "ENOENT") return undefined; throw error; } }
   async delete(id: WorkerId | string): Promise<void> { await rm(this.dir(id), { recursive: true, force: true }); }
   private async readJson<T>(id: WorkerId | string, file: string): Promise<T> { return JSON.parse(await readFile(this.path(id, file), "utf8")) as T; }
   async readLog<T extends { seq: number }>(id: WorkerId | string, name: LogName, fromSeq = 1): Promise<T[]> {
