@@ -34,6 +34,7 @@ pi-tmux-subagent status <id>
 pi-tmux-subagent send <id> "also inspect refresh tokens"
 pi-tmux-subagent steer <id> "focus on OAuth"
 pi-tmux-subagent result <id>
+pi-tmux-subagent events <id> [fromSeq] [limit]
 pi-tmux-subagent attach <id>
 pi-tmux-subagent stop <id>
 pi-tmux-subagent delete <id>
@@ -43,7 +44,7 @@ Output is JSON. Set `PI_TMUX_REGISTRY` to override the default `~/.pi/tmux-subag
 
 ## Pi extension
 
-The `subagent` tool supports `spawn`, `send`, `steer`, `status`, `result`, `stop`, `delete`, and `list`. Deletion is limited to terminal workers and permanently removes their registry directory. Human commands are:
+The `subagent` tool supports `spawn`, `send`, `steer`, `status`, `result`, `events`, `stop`, `delete`, and `list`. Deletion is limited to terminal workers and permanently removes their registry directory. Human commands are:
 
 - `/subagents` — open the complete worker selector to send, steer, stop, inspect, or delete a terminal worker
 - `/subagent-inspect <id>` — show bounded durable activity, result, and worktree metadata

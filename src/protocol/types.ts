@@ -116,3 +116,17 @@ export interface CompletionQuery {
   /** Overrides the consumer's durable checkpoint when supplied. */
   after?: number;
 }
+
+export interface WorkerEventsResult {
+  version: 1;
+  id: WorkerId;
+  events: WorkerEvent[];
+  fromSeq: number;
+  nextSeq?: number | undefined;
+  hasMore: boolean;
+}
+
+export interface EventHistoryOptions {
+  fromSeq?: number | undefined;
+  limit?: number | undefined;
+}

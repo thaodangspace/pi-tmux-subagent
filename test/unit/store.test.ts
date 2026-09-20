@@ -147,4 +147,41 @@ describe("protocol store", () => {
     const tail = await store.readLog<any>(id, "commands", 3);
     expect(tail.map((c) => c.seq)).toEqual([3, 4, 5]);
   });
+
+  it("supports bounded pagination with limit", async () => {
+    const { store, id } = await fixture();
+    for (let i = 1; i <= 5; i++) {
+      await store.appendEvent(id, { type: "event", data: i });
+    }
+    const slice = await store.readLog<any>(id, "events", 2, 2);
+    expect(slice.map((e) => e.seq)).toEqual([2, 3]);
+  });
+
+  it("throws clear errors on invalid sequence and limit arguments", async () => {
+    const { store, id } = await fixture();
+    await expect(store.readLog(id, "events", 0)).rejects.toMatchObject({
+      code: "INVALID_SEQUENCE",
+    });
+    await expect(store.readLog(id, "events", -1)).rejects.toMatchObject({
+      code: "INVALID_SEQUENCE",
+    });
+    await expect(store.readLog(id, "events", 1.5)).rejects.toMatchObject({
+      code: "INVALID_SEQUENCE",
+    });
+    await expect(store.readLog(id, "events", 1, 0)).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+    });
+    await expect(store.readLog(id, "events", 1, -5)).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+    });
+  });
+
+  it("throws WORKER_NOT_FOUND when reading log for nonexistent worker", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-sa-"));
+    roots.push(root);
+    const store = new ProtocolStore(root);
+    await expect(store.readLog("nonexistent", "events")).rejects.toMatchObject({
+      code: "WORKER_NOT_FOUND",
+    });
+  });
 });

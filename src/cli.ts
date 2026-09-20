@@ -11,16 +11,17 @@ Usage:
   pi-tmux-subagent <command> [options]
 
 Commands:
-  spawn <task>       Start a worker
-  send <id> <text>   Send a follow-up prompt
-  steer <id> <text>  Steer the active turn
-  status <id>        Show durable worker state
-  result <id>        Show the latest final result
-  stop <id>          Stop a worker
-  delete <id>        Delete a terminal worker and its stored data
-  list               List durable workers
-  attach <id>        Attach to the worker tmux session
-  help               Show this help
+  spawn <task>                  Start a worker
+  send <id> <text>              Send a follow-up prompt
+  steer <id> <text>             Steer the active turn
+  status <id>                   Show durable worker state
+  result <id>                   Show the latest final result
+  events <id> [fromSeq] [limit] Show bounded worker event history
+  stop <id>                     Stop a worker
+  delete <id>                   Delete a terminal worker and its stored data
+  list                          List durable workers
+  attach <id>                   Attach to the worker tmux session
+  help                          Show this help
 `;
 
 export async function main(argv = process.argv.slice(2)): Promise<number> {
@@ -62,7 +63,15 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       value = await manager.status(id);
     } else if (command === "result") {
       if (!id) throw new Error("result requires <id>");
-      value = (await manager.result(id)) ?? { id, result: null };
+      value = await manager.getResult(id);
+    } else if (command === "events") {
+      if (!id) throw new Error("events requires <id>");
+      const fromSeq = argv[2] !== undefined ? Number(argv[2]) : undefined;
+      const limit = argv[3] !== undefined ? Number(argv[3]) : undefined;
+      value = await manager.events(id, {
+        ...(fromSeq !== undefined ? { fromSeq } : {}),
+        ...(limit !== undefined ? { limit } : {}),
+      });
     } else if (command === "list") value = await manager.list();
     else if (command === "attach") {
       if (!id) throw new Error("attach requires <id>");

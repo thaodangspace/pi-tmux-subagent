@@ -11,6 +11,7 @@ const subagentSchema = Type.Object({
     "steer",
     "status",
     "result",
+    "events",
     "stop",
     "delete",
     "list",
@@ -24,6 +25,9 @@ const subagentSchema = Type.Object({
   model: Type.Optional(Type.String()),
   thinking: Type.Optional(Type.String()),
   workspace: Type.Optional(StringEnum(["current", "worktree"] as const)),
+  mode: Type.Optional(StringEnum(["full"] as const)),
+  fromSeq: Type.Optional(Type.Integer({ minimum: 1 })),
+  limit: Type.Optional(Type.Integer({ minimum: 1 })),
 });
 export interface SubagentInput {
   action:
@@ -32,6 +36,7 @@ export interface SubagentInput {
     | "steer"
     | "status"
     | "result"
+    | "events"
     | "stop"
     | "delete"
     | "list";
@@ -44,6 +49,9 @@ export interface SubagentInput {
   model?: string;
   thinking?: string;
   workspace?: "current" | "worktree";
+  mode?: "full";
+  fromSeq?: number;
+  limit?: number;
 }
 function requireValue(value: string | undefined, name: string): string {
   if (!value) throw new Error(`${name} is required`);
@@ -57,8 +65,9 @@ export function registerSubagentTool(
     name: "subagent",
     label: "Subagent",
     description:
-      "Spawn and control durable Pi workers. Output is truncated to concise JSON.",
-    promptSnippet: "Spawn or control durable background Pi workers",
+      "Spawn and control durable background Pi workers. Output is truncated to concise JSON. Automatic completion notifications deliver compact summaries; use action 'result' as an explicit opt-in to fetch complete answers and workspace metadata, or action 'events' for bounded event history inspection.",
+    promptSnippet:
+      "Spawn or control background workers, or opt-in to fetch full results/events after completion",
     parameters: subagentSchema,
     async execute(_id, input, signal, onUpdate, ctx) {
       signal?.throwIfAborted();
@@ -102,10 +111,12 @@ export function registerSubagentTool(
       else if (input.action === "status")
         value = await manager.recover(requireValue(input.id, "id"));
       else if (input.action === "result")
-        value = (await manager.result(requireValue(input.id, "id"))) ?? {
-          id: input.id,
-          result: null,
-        };
+        value = await manager.getResult(requireValue(input.id, "id"));
+      else if (input.action === "events")
+        value = await manager.events(requireValue(input.id, "id"), {
+          ...(input.fromSeq !== undefined ? { fromSeq: input.fromSeq } : {}),
+          ...(input.limit !== undefined ? { limit: input.limit } : {}),
+        });
       else if (input.action === "stop")
         value = {
           id: input.id,

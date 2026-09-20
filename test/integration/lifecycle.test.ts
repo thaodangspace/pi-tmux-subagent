@@ -498,9 +498,22 @@ describe("durable lifecycle", () => {
       expect(JSON.stringify(msg)).not.toContain("text_delta");
     }
 
-    // Main agent can subsequently call manager.result(id) to fetch full details
-    const fullResult = await manager.result(id);
-    expect(fullResult?.text).toBe("reply-1:task-completion-check");
+    // Main agent can subsequently call manager.getResult(id) to fetch full details
+    const fullResult = await manager.getResult(id);
+    expect(fullResult.text).toBe("reply-1:task-completion-check");
+    expect(fullResult.turn).toBe(1);
+    expect(fullResult.resultSeq).toBeDefined();
+
+    // Main agent can also fetch bounded event history via manager.events(id)
+    const eventHistory = await manager.events(id, { limit: 2 });
+    expect(eventHistory.events).toHaveLength(2);
+    expect(eventHistory.hasMore).toBe(true);
+    expect(eventHistory.nextSeq).toBe(3);
+
+    const nextEvents = await manager.events(id, {
+      fromSeq: eventHistory.nextSeq,
+    });
+    expect(nextEvents.events.length).toBeGreaterThan(0);
 
     // Extension restart simulation: new notifier does not redeliver already acknowledged completions
     const restartedMessages: any[] = [];
