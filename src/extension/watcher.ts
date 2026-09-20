@@ -49,5 +49,9 @@ export class ActivityWatcher {
 }
 
 function meaningfulFingerprint(views: WorkerActivityView[]): string {
-  return JSON.stringify(views.map(({ elapsedMs: _elapsed, ...view }) => view));
+  return JSON.stringify(views.map((view) => ({
+    id: view.id, name: view.name, status: view.status, turn: view.turn,
+    startedAt: view.startedAt, updatedAt: view.updatedAt,
+    latestActivity: view.latestActivity, latestActivityKind: view.latestActivityKind,
+  })));
 }

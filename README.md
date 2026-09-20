@@ -44,8 +44,21 @@ Output is JSON. Set `PI_TMUX_REGISTRY` to override the default `~/.pi/tmux-subag
 
 The `subagent` tool supports `spawn`, `send`, `steer`, `status`, `result`, `stop`, and `list`. Human commands are:
 
-- `/subagents`
-- `/subagent-attach <id>`
+- `/subagents` — open the worker selector and send, steer, stop, or inspect a worker
+- `/subagent-inspect <id>` — show bounded durable activity, result, and worktree metadata
+- `/subagent-attach <id>` — print a safe attach command for another terminal
+
+In interactive Pi sessions, a compact Subagents widget remains below the editor and refreshes as durable worker state changes:
+
+```text
+Subagents  2 agents
+● auth-scout  running  turn 2  00:34
+  [tool] grep refreshToken
+○ reviewer  waiting  turn 1  01:12
+  ready for next instruction
+```
+
+The widget is reconstructed after parent restarts and is omitted in headless modes. `/subagents` remains the detailed selection/control surface. Direct attach is not attempted inside the active Pi TUI because nested terminal control can corrupt the session; `/subagent-attach` provides the equivalent `pi-tmux-subagent attach` command to run in another terminal. tmux remains supervision and optional human inspection only: UI activity comes from `commands.jsonl`, `events.jsonl`, state, and result data—never pane scraping or `tmux send-keys`.
 
 Agent definitions live at `.pi/agents/<name>.md`:
 

@@ -52,7 +52,7 @@ export async function loadWorkerViews(manager: Manager, now = Date.now()): Promi
 
 export function setSubagentsWidget(ctx: ExtensionContext, workers: WorkerActivityView[]): void {
   if (!ctx.hasUI) return;
-  ctx.ui.setWidget(SUBAGENTS_WIDGET_ID, (_tui, _theme) => ({
+  ctx.ui.setWidget(SUBAGENTS_WIDGET_ID, () => ({
     render: (width: number) => renderSubagentsWidget(workers, width),
     invalidate() {},
   }), { placement: "belowEditor" });
