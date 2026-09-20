@@ -1,0 +1,36 @@
+{
+  "name": "pi-tmux-subagent",
+  "version": "0.1.0",
+  "description": "Durable Pi RPC workers supervised by tmux",
+  "type": "module",
+  "bin": { "pi-tmux-subagent": "dist/cli.js" },
+  "exports": { ".": "./dist/index.js", "./extension": "./dist/extension/index.js" },
+  "files": ["dist", "README.md", "AGENTS.md"],
+  "pi": { "extensions": ["./dist/extension/index.js"] },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:integration": "vitest run test/integration",
+    "test:real": "PI_TMUX_REAL_TEST=1 vitest run test/integration/real-pi.test.ts",
+    "format": "prettier --write .",
+    "check": "npm run lint && npm run typecheck && npm test && npm run build"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "@earendil-works/pi-ai": "^0.86.0",
+    "@earendil-works/pi-coding-agent": "^0.86.0",
+    "typebox": "^1.0.55",
+    "yaml": "^2.8.2"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@types/node": "^24.10.1",
+    "eslint": "^9.39.1",
+    "prettier": "^3.7.4",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.48.1",
+    "vitest": "^4.0.15"
+  }
+}
