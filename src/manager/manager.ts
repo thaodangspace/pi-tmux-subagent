@@ -5,6 +5,8 @@ import { Recovery, type RecoveryOptions } from "./recovery.js";
 import { ProtocolStore } from "../protocol/store.js";
 import { completionSummary } from "../protocol/completion.js";
 import type {
+  CompletionFeedEntry,
+  CompletionQuery,
   LaunchConfig,
   WorkerCompletion,
   WorkerMeta,
@@ -167,6 +169,14 @@ export class Manager {
   }
   completion(id: string): Promise<WorkerCompletion | undefined> {
     return this.store.readCompletion(workerId(id));
+  }
+  /** Returns entries after an explicit cursor or the consumer's durable ack. */
+  completions(query: CompletionQuery): Promise<CompletionFeedEntry[]> {
+    return this.store.completions(query);
+  }
+  /** Advance a consumer checkpoint only after it handled the entry. */
+  ackCompletion(consumer: string, cursor: number): Promise<void> {
+    return this.store.ackCompletion(consumer, cursor);
   }
   async list(): Promise<WorkerState[]> {
     return new Recovery(this.store, this.tmux, this.recoveryOptions).scan();

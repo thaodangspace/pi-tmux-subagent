@@ -103,3 +103,16 @@ export interface WorkerCompletion {
   hasDetails: boolean;
   completedAt: string;
 }
+
+/** A globally ordered entry in the durable completion feed. */
+export interface CompletionFeedEntry {
+  version: 1;
+  cursor: number;
+  completion: WorkerCompletion;
+}
+
+export interface CompletionQuery {
+  consumer: string;
+  /** Overrides the consumer's durable checkpoint when supplied. */
+  after?: number;
+}

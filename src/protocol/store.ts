@@ -13,6 +13,8 @@ import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { SubagentError, workerId, type WorkerId } from "../types.js";
 import type {
+  CompletionFeedEntry,
+  CompletionQuery,
   WorkerCommand,
   WorkerCompletion,
   WorkerEvent,
@@ -103,7 +105,7 @@ async function getLastSeqAndRepair(filePath: string): Promise<number> {
         const lineBuf = Buffer.alloc(lineLen);
         await handle.read(lineBuf, 0, lineLen, readPos + nl + 1);
         const record = JSON.parse(lineBuf.toString("utf8").trim());
-        return record.seq ?? 0;
+        return record.seq ?? record.cursor ?? 0;
       }
     }
 
@@ -114,7 +116,7 @@ async function getLastSeqAndRepair(filePath: string): Promise<number> {
       .trim();
     if (!line) return 0;
     const record = JSON.parse(line);
-    return record.seq ?? 0;
+    return record.seq ?? record.cursor ?? 0;
   } finally {
     await handle.close();
   }
@@ -157,7 +159,136 @@ export class ProtocolStore {
     await atomicJson(this.path(value.id, "result.json"), value);
   }
   async writeCompletion(value: WorkerCompletion): Promise<void> {
-    await atomicJson(this.path(value.id, "completion.json"), value);
+    await mkdir(this.root, { recursive: true, mode: 0o700 });
+    const lock = join(this.root, ".completions.lock");
+    await this.acquire(lock);
+    try {
+      const feedPath = join(this.root, "completions.jsonl");
+      const lastCursor = await getLastSeqAndRepair(feedPath);
+      const entries = await this.readCompletionFeed();
+      const existing = entries.find(
+        ({ completion }) =>
+          completion.id === value.id &&
+          completion.turn === value.turn &&
+          completion.resultSeq === value.resultSeq &&
+          completion.status === value.status,
+      );
+      if (!existing) {
+        const entry: CompletionFeedEntry = {
+          version: 1,
+          cursor: lastCursor + 1,
+          completion: value,
+        };
+        await appendFile(feedPath, `${JSON.stringify(entry)}\n`, {
+          encoding: "utf8",
+          flag: "a",
+          mode: 0o600,
+        });
+      }
+      // The per-worker file is only a latest-completion cache. The feed above
+      // is the durable history and must be published first.
+      await atomicJson(this.path(value.id, "completion.json"), value);
+    } finally {
+      await rm(lock, { recursive: true, force: true });
+    }
+  }
+
+  async completions(query: CompletionQuery): Promise<CompletionFeedEntry[]> {
+    this.consumerPath(query.consumer);
+    const after =
+      query.after === undefined
+        ? await this.readCompletionCursor(query.consumer)
+        : this.validCursor(query.after);
+    return (await this.readCompletionFeed()).filter(
+      (entry) => entry.cursor > after,
+    );
+  }
+
+  async ackCompletion(consumer: string, cursor: number): Promise<void> {
+    const value = this.validCursor(cursor);
+    const cursorPath = this.consumerPath(consumer);
+    const lock = `${cursorPath}.lock`;
+    await mkdir(dirname(cursorPath), { recursive: true, mode: 0o700 });
+    await this.acquire(lock);
+    try {
+      const entries = await this.readCompletionFeed();
+      const maximum = entries.at(-1)?.cursor ?? 0;
+      if (value > maximum) {
+        throw new SubagentError(
+          "INVALID_COMPLETION_CURSOR",
+          `Completion cursor ${value} has not been published`,
+        );
+      }
+      const current = await this.readCompletionCursor(consumer);
+      if (value > current) {
+        await atomicJson(cursorPath, { version: 1, consumer, cursor: value });
+      }
+    } finally {
+      await rm(lock, { recursive: true, force: true });
+    }
+  }
+
+  private async readCompletionFeed(): Promise<CompletionFeedEntry[]> {
+    let text: string;
+    try {
+      text = await readFile(join(this.root, "completions.jsonl"), "utf8");
+    } catch (error: any) {
+      if (error.code === "ENOENT") return [];
+      throw error;
+    }
+    const lines = text.split("\n");
+    const entries: CompletionFeedEntry[] = [];
+    for (let index = 0; index < lines.length; index++) {
+      const line = lines[index]!;
+      if (!line) continue;
+      try {
+        const entry = JSON.parse(line) as CompletionFeedEntry;
+        if (entry.cursor !== entries.length + 1 || !entry.completion) {
+          throw new Error("invalid cursor");
+        }
+        entries.push(entry);
+      } catch (error) {
+        if (index === lines.length - 1 && !text.endsWith("\n")) break;
+        throw new SubagentError(
+          "CORRUPT_LOG",
+          `Invalid completions.jsonl record ${index + 1}`,
+          error,
+        );
+      }
+    }
+    return entries;
+  }
+
+  private consumerPath(consumer: string): string {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(consumer)) {
+      throw new SubagentError(
+        "INVALID_COMPLETION_CONSUMER",
+        `Invalid completion consumer: ${consumer}`,
+      );
+    }
+    return join(this.root, "consumers", `${consumer}.json`);
+  }
+
+  private validCursor(cursor: number): number {
+    if (!Number.isSafeInteger(cursor) || cursor < 0) {
+      throw new SubagentError(
+        "INVALID_COMPLETION_CURSOR",
+        `Invalid completion cursor: ${cursor}`,
+      );
+    }
+    return cursor;
+  }
+
+  private async readCompletionCursor(consumer: string): Promise<number> {
+    try {
+      const checkpoint = JSON.parse(
+        await readFile(this.consumerPath(consumer), "utf8"),
+      ) as { cursor: number };
+      return this.validCursor(checkpoint.cursor);
+    } catch (error: any) {
+      if (error.code === "ENOENT") return 0;
+      throw error;
+    }
   }
   async readMeta(id: WorkerId | string): Promise<WorkerMeta> {
     return this.readJson(id, "meta.json");

@@ -109,9 +109,14 @@ Each worker uses:
   result.json
   completion.json
   runner.log
+~/.pi/tmux-subagents/
+  completions.jsonl
+  consumers/<name>.json
 ```
 
-`commands.jsonl` and `events.jsonl` are the authoritative command/event history. `result.json` is the authoritative complete response for the latest settled turn, including workspace metadata. `completion.json` is the durable, compact notification for that result (or a worker failure); `meta.json` and `state.json` are rebuildable caches. Snapshot files are written atomically. A manager restart can discover a live tmux worker and enqueue more commands.
+`commands.jsonl` and `events.jsonl` are the authoritative command/event history. `completions.jsonl` is the authoritative, globally ordered compact completion history; `consumers/<name>.json` stores each consumer's durable acknowledged cursor. `result.json` is the authoritative complete response for the latest settled turn, including workspace metadata. Per-worker `completion.json`, `meta.json`, and `state.json` are rebuildable/latest-value caches. Snapshot files are written atomically. A manager restart can discover a live tmux worker and enqueue more commands.
+
+Consumers call `manager.completions({ consumer })`, handle entries in cursor order, and call `manager.ackCompletion(consumer, cursor)` only after successful handling. An unacknowledged entry is delivered again after restart; acknowledged entries remain available to other consumers. The feed includes completed and failed turns and contains no full result payload or automatic Pi conversation injection.
 
 Completion summaries are whitespace-normalized and limited to 512 UTF-8 bytes. A producer may pass an explicit final-output summary to `completionSummary`; when it does not, the same deterministic limit is applied to the full assistant response. The complete response is never truncated in `result.json`. `resultSeq` ties a completion to the event that finalized its result or failure, while `turn` and `commandSeq` identify the corresponding interaction. Streaming `message_update` events are neither persisted nor used for completion delivery. Stale heartbeat, process, or tmux evidence transitions an active worker to `orphaned`.
 
