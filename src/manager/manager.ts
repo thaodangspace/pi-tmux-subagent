@@ -7,20 +7,23 @@ import type { LaunchConfig, WorkerMeta, WorkerResult, WorkerState } from "../pro
 import { TmuxAdapter } from "../tmux/adapter.js";
 import { sessionName } from "../tmux/adapter.js";
 import { workerId, type WorkerId } from "../types.js";
+import { WorktreeAdapter } from "../worktree/adapter.js";
 
-export interface ManagerOptions { store?: ProtocolStore; tmux?: TmuxAdapter; runnerFile?: string }
+export interface ManagerOptions { store?: ProtocolStore; tmux?: TmuxAdapter; worktree?: WorktreeAdapter; runnerFile?: string }
 export class Manager {
-  readonly store: ProtocolStore; readonly tmux: TmuxAdapter; private readonly runnerFile: string;
+  readonly store: ProtocolStore; readonly tmux: TmuxAdapter; readonly worktree: WorktreeAdapter; private readonly runnerFile: string;
   constructor(options: ManagerOptions = {}) {
-    this.store = options.store ?? new ProtocolStore(); this.tmux = options.tmux ?? new TmuxAdapter();
+    this.store = options.store ?? new ProtocolStore(); this.tmux = options.tmux ?? new TmuxAdapter(); this.worktree = options.worktree ?? new WorktreeAdapter();
     this.runnerFile = options.runnerFile ?? resolve(dirname(fileURLToPath(import.meta.url)), "../runner/main.js");
   }
   async spawn(config: LaunchConfig, cwd = process.cwd(), requestedId?: string): Promise<WorkerState> {
     const id = workerId(requestedId ?? randomBytes(6).toString("hex"));
-    const meta: WorkerMeta = { version: 1, id, tmuxSession: sessionName(id), createdAt: new Date().toISOString(), cwd, launch: config };
+    const workspace = config.workspace === "worktree" ? await this.worktree.prepare(cwd, id) : { mode: "current" as const, root: cwd };
+    const workerCwd = workspace.worktree ?? cwd;
+    const meta: WorkerMeta = { version: 1, id, tmuxSession: sessionName(id), createdAt: new Date().toISOString(), cwd: workerCwd, launch: config, workspace };
     const state: WorkerState = { version: 1, id, status: "starting", turn: 0, lastCommandSeq: 0, lastEventSeq: 0 };
     await this.store.create(meta, state); await this.store.appendCommand(id, { type: "prompt", text: config.task });
-    try { await this.tmux.create(id, cwd, this.runnerFile); } catch (error) {
+    try { await this.tmux.create(id, workerCwd, this.runnerFile); } catch (error) {
       const event = await this.store.appendEvent(id, { type: "failed", data: error instanceof Error ? error.message : error });
       const failed = { ...state, status: "failed" as const, lastEventSeq: event.seq, lastEventAt: event.at }; await this.store.writeState(failed); throw error;
     }

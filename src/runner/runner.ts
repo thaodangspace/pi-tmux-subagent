@@ -5,6 +5,7 @@ import type { WorkerCommand, WorkerEvent } from "../protocol/types.js";
 import { RpcClient } from "./rpc-client.js";
 import { renderRpcEvent } from "./renderer.js";
 import type { WorkerId } from "../types.js";
+import { WorktreeAdapter } from "../worktree/adapter.js";
 
 export interface RunnerOptions { pollMs?: number; heartbeatMs?: number; rpcCommand?: string; rpcArgs?: string[]; output?: NodeJS.WritableStream }
 export class Runner {
@@ -52,7 +53,8 @@ export class Runner {
     if (event.type === "agent_settled" && this.latestText) {
       const state = await this.store.readState(this.id);
       const meta = await this.store.readMeta(this.id);
-      await this.store.writeResult({ version: 1, id: this.id, text: this.latestText, completedAt: new Date().toISOString(), eventSeq: state.lastEventSeq, ...(meta.workspace ? { workspace: meta.workspace } : {}) });
+      const workspace = meta.workspace?.mode === "worktree" ? await new WorktreeAdapter().inspect(meta.workspace).catch(() => meta.workspace) : meta.workspace;
+      await this.store.writeResult({ version: 1, id: this.id, text: this.latestText, completedAt: new Date().toISOString(), eventSeq: state.lastEventSeq, ...(workspace ? { workspace } : {}) });
     }
   }
   private async record(value: Omit<WorkerEvent, "version" | "seq" | "at">): Promise<void> {
