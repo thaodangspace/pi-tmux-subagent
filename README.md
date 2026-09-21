@@ -138,6 +138,8 @@ Completion notification checkpointing is **enqueue-once under normal operation, 
 
 Command acknowledgement is **at-least-once around the external RPC boundary**: a command is acknowledged only after Pi accepts it, and acknowledged commands are skipped after runner restart. A crash after Pi accepts a command but before the local acknowledgement is durable can cause that command to be retried because those two effects cannot be one transaction.
 
+Turn correlation is frozen at `agent_start`: the next accepted `prompt`/`send` command becomes that turn's immutable `commandSeq`, while `steer` and `abort` are persisted as related-command events and cannot replace it. A queued follow-up remains pending for the next `agent_start`. The `agent_start` event persists the complete turn context for restart/debugging. If Pi emits a start without a pending initiating command, the turn is retained without `commandSeq`; if it settles without a start, no previous turn identity is reused.
+
 ## Worktrees
 
 `workspace: worktree` creates `.pi/worktrees/<worker-id>` on branch `pi-sa/<worker-id>`. Results report worktree, branch, commit, and changed files. The package never merges, cherry-picks, or force-removes dirty work. Users retain integration and cleanup control.

@@ -15,6 +15,13 @@ import { renderRpcEvent } from "./renderer.js";
 import type { WorkerId } from "../types.js";
 import { WorktreeAdapter } from "../worktree/adapter.js";
 
+interface ActiveTurnContext {
+  turn: number;
+  initiatingCommandSeq?: number;
+  relatedCommandSeqs: number[];
+  startedAt: string;
+}
+
 export interface RunnerOptions {
   pollMs?: number;
   heartbeatMs?: number;
@@ -27,7 +34,8 @@ export class Runner {
   private stopped = false;
   private turnText = "";
   private currentTurn = 0;
-  private activeCommandSeq?: number;
+  private activeTurn: ActiveTurnContext | undefined;
+  private readonly pendingTurnCommandSeqs: number[] = [];
   private lastProcessedCommandSeq = 0;
   private heartbeat?: NodeJS.Timeout;
   private recordQueue: Promise<void> = Promise.resolve();
@@ -185,12 +193,25 @@ export class Runner {
   }
 
   private async execute(command: WorkerCommand): Promise<void> {
-    this.activeCommandSeq = command.seq;
-    if (command.type === "prompt") await this.rpc.prompt(command.text);
-    else if (command.type === "send")
-      await this.rpc.prompt(command.text, "followUp");
-    else if (command.type === "steer") await this.rpc.steer(command.text);
-    else if (command.type === "abort") await this.rpc.abort();
+    if (command.type === "prompt" || command.type === "send") {
+      // Queue before calling RPC because agent_start may arrive before the RPC
+      // request promise resolves. It is consumed only when that turn starts.
+      this.pendingTurnCommandSeqs.push(command.seq);
+      try {
+        if (command.type === "prompt") await this.rpc.prompt(command.text);
+        else await this.rpc.prompt(command.text, "followUp");
+      } catch (error) {
+        const index = this.pendingTurnCommandSeqs.indexOf(command.seq);
+        if (index >= 0) this.pendingTurnCommandSeqs.splice(index, 1);
+        throw error;
+      }
+    } else if (command.type === "steer") {
+      await this.rpc.steer(command.text);
+      await this.recordRelatedCommand(command);
+    } else if (command.type === "abort") {
+      await this.rpc.abort();
+      await this.recordRelatedCommand(command);
+    }
     else if (command.type === "stop") {
       await this.rpc.abort().catch(() => undefined);
       this.stopped = true;
@@ -217,6 +238,15 @@ export class Runner {
     if (event.type === "agent_start") {
       this.turnText = "";
       this.currentTurn += 1;
+      const initiatingCommandSeq = this.pendingTurnCommandSeqs.shift();
+      this.activeTurn = {
+        turn: this.currentTurn,
+        ...(initiatingCommandSeq !== undefined
+          ? { initiatingCommandSeq }
+          : {}),
+        relatedCommandSeqs: [],
+        startedAt: new Date().toISOString(),
+      };
     }
 
     const text = assistantText(event);
@@ -231,9 +261,12 @@ export class Runner {
 
     await this.record({
       type: event.type,
-      data: event,
-      ...(this.activeCommandSeq !== undefined
-        ? { commandSeq: this.activeCommandSeq }
+      data:
+        event.type === "agent_start"
+          ? { rpcEvent: event, turnContext: this.activeTurn }
+          : event,
+      ...(this.activeTurn?.initiatingCommandSeq !== undefined
+        ? { commandSeq: this.activeTurn.initiatingCommandSeq }
         : {}),
     });
 
@@ -251,8 +284,8 @@ export class Runner {
         id: this.id,
         status: "completed",
         turn: this.currentTurn,
-        ...(this.activeCommandSeq !== undefined
-          ? { commandSeq: this.activeCommandSeq }
+        ...(this.activeTurn?.initiatingCommandSeq !== undefined
+          ? { commandSeq: this.activeTurn.initiatingCommandSeq }
           : {}),
         text: this.turnText,
         completedAt: new Date().toISOString(),
@@ -263,7 +296,25 @@ export class Runner {
       // The complete response is durable before its compact notification is published.
       await this.store.writeResult(result);
       await this.store.writeCompletion(completedNotification(result));
+      this.activeTurn = undefined;
     }
+  }
+
+  private async recordRelatedCommand(command: WorkerCommand): Promise<void> {
+    if (!this.activeTurn) return;
+    this.activeTurn.relatedCommandSeqs.push(command.seq);
+    await this.record({
+      type: "turn_command_related",
+      ...(this.activeTurn.initiatingCommandSeq !== undefined
+        ? { commandSeq: this.activeTurn.initiatingCommandSeq }
+        : {}),
+      data: {
+        turn: this.activeTurn.turn,
+        initiatingCommandSeq: this.activeTurn.initiatingCommandSeq,
+        relatedCommandSeq: command.seq,
+        commandType: command.type,
+      },
+    });
   }
 
   private record(
@@ -288,8 +339,8 @@ export class Runner {
       id: this.id,
       status: "failed",
       turn: state.turn,
-      ...(this.activeCommandSeq !== undefined
-        ? { commandSeq: this.activeCommandSeq }
+      ...(this.activeTurn?.initiatingCommandSeq !== undefined
+        ? { commandSeq: this.activeTurn.initiatingCommandSeq }
         : {}),
       resultSeq: state.lastEventSeq,
       eventSeq: state.lastEventSeq,
@@ -301,8 +352,8 @@ export class Runner {
       version: 1,
       id: this.id,
       turn: state.turn,
-      ...(this.activeCommandSeq !== undefined
-        ? { commandSeq: this.activeCommandSeq }
+      ...(this.activeTurn?.initiatingCommandSeq !== undefined
+        ? { commandSeq: this.activeTurn.initiatingCommandSeq }
         : {}),
       resultSeq: state.lastEventSeq,
       status: "failed",
