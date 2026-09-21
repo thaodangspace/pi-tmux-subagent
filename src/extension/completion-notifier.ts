@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Manager } from "../manager/manager.js";
 import type { WorkerCompletion } from "../protocol/types.js";
@@ -35,6 +36,7 @@ export function subagentCompletionPayload(
 }
 
 export interface CompletionNotifierOptions {
+  ownerSessionKey: string;
   consumer?: string;
   intervalMs?: number;
   onError?: (error: unknown) => void;
@@ -55,9 +57,13 @@ export class CompletionNotifier {
   constructor(
     private readonly manager: Manager,
     private readonly pi: Pick<ExtensionAPI, "sendMessage">,
-    private readonly options: CompletionNotifierOptions = {},
+    private readonly options: CompletionNotifierOptions,
   ) {
-    this.consumer = options.consumer ?? "pi-extension";
+    const ownerHash = createHash("sha256")
+      .update(options.ownerSessionKey)
+      .digest("hex")
+      .slice(0, 24);
+    this.consumer = options.consumer ?? `pi-extension-${ownerHash}`;
     this.intervalMs = options.intervalMs ?? 500;
   }
 
@@ -97,6 +103,7 @@ export class CompletionNotifier {
     try {
       const entries = await this.manager.completions({
         consumer: this.consumer,
+        ownerSessionKey: this.options.ownerSessionKey,
       });
       for (const entry of entries) {
         if (this.disposed) break;
@@ -105,7 +112,11 @@ export class CompletionNotifier {
           completion.status !== "completed" &&
           completion.status !== "failed"
         ) {
-          await this.manager.ackCompletion(this.consumer, entry.cursor);
+          await this.manager.ackCompletion(
+            this.consumer,
+            this.options.ownerSessionKey,
+            entry.cursor,
+          );
           continue;
         }
 
@@ -126,7 +137,11 @@ export class CompletionNotifier {
 
         // Acknowledge the durable completion only after the Pi session message
         // has been accepted successfully.
-        await this.manager.ackCompletion(this.consumer, entry.cursor);
+        await this.manager.ackCompletion(
+          this.consumer,
+          this.options.ownerSessionKey,
+          entry.cursor,
+        );
       }
     } catch (error) {
       this.options.onError?.(error);

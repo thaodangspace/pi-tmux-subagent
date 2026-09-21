@@ -91,6 +91,8 @@ export function registerSubagentTool(
             },
           ),
           ctx.cwd,
+          undefined,
+          ctx.sessionManager.getSessionId(),
         );
       else if (input.action === "send")
         value = {

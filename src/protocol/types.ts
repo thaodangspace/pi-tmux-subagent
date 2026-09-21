@@ -39,6 +39,8 @@ export interface LaunchConfig {
 export interface WorkerMeta {
   version: 1;
   id: WorkerId;
+  /** Stable Pi parent session identity. Omitted for CLI/manual workers. */
+  ownerSessionKey?: string;
   tmuxSession: string;
   createdAt: string;
   cwd: string;
@@ -108,11 +110,14 @@ export interface WorkerCompletion {
 export interface CompletionFeedEntry {
   version: 1;
   cursor: number;
+  /** Null identifies a CLI/manual worker with no automatic delivery owner. */
+  ownerSessionKey: string | null;
   completion: WorkerCompletion;
 }
 
 export interface CompletionQuery {
   consumer: string;
+  ownerSessionKey: string;
   /** Overrides the consumer's durable checkpoint when supplied. */
   after?: number;
 }

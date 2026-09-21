@@ -69,6 +69,7 @@ export class Manager {
     config: LaunchConfig,
     cwd = process.cwd(),
     requestedId?: string,
+    ownerSessionKey?: string,
   ): Promise<WorkerState> {
     const parentDepth = process.env.PI_TMUX_DEPTH
       ? Number.parseInt(process.env.PI_TMUX_DEPTH, 10)
@@ -99,6 +100,7 @@ export class Manager {
     const meta: WorkerMeta = {
       version: 1,
       id,
+      ...(ownerSessionKey ? { ownerSessionKey } : {}),
       tmuxSession: sessionName(id),
       createdAt: new Date().toISOString(),
       cwd: workerCwd,
@@ -295,8 +297,12 @@ export class Manager {
     return this.store.completions(query);
   }
   /** Advance a consumer checkpoint only after it handled the entry. */
-  ackCompletion(consumer: string, cursor: number): Promise<void> {
-    return this.store.ackCompletion(consumer, cursor);
+  ackCompletion(
+    consumer: string,
+    ownerSessionKey: string,
+    cursor: number,
+  ): Promise<void> {
+    return this.store.ackCompletion(consumer, ownerSessionKey, cursor);
   }
   async list(): Promise<WorkerState[]> {
     return new Recovery(this.store, this.tmux, this.recoveryOptions).scan();

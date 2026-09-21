@@ -24,6 +24,7 @@ async function fixture() {
       {
         version: 1,
         id,
+        ownerSessionKey: "session-a",
         tmuxSession: `pi-sa-${id}`,
         createdAt: "2026-01-01T00:00:00Z",
         cwd: root,
@@ -69,21 +70,24 @@ describe("durable completion feed", () => {
       store: new ProtocolStore(root),
     }).completions({
       consumer: "pi-extension",
+      ownerSessionKey: "session-a",
     });
     expect(first.map((entry) => entry.cursor)).toEqual([1]);
 
     const beforeAck = await new Manager({
       store: new ProtocolStore(root),
-    }).completions({ consumer: "pi-extension" });
+    }).completions({ consumer: "pi-extension", ownerSessionKey: "session-a" });
     expect(beforeAck).toEqual(first);
 
     await new Manager({ store: new ProtocolStore(root) }).ackCompletion(
       "pi-extension",
+      "session-a",
       first[0]!.cursor,
     );
     expect(
       await new Manager({ store: new ProtocolStore(root) }).completions({
         consumer: "pi-extension",
+      ownerSessionKey: "session-a",
       }),
     ).toEqual([]);
   });
@@ -98,6 +102,7 @@ describe("durable completion feed", () => {
 
     const entries = await new ProtocolStore(root).completions({
       consumer: "other-consumer",
+      ownerSessionKey: "session-a",
     });
     expect(entries.map((entry) => entry.cursor)).toEqual([1, 2, 3]);
     expect(entries.map((entry) => entry.completion.status).sort()).toEqual([
@@ -118,11 +123,11 @@ describe("durable completion feed", () => {
     await store.writeCompletion(value);
     await store.writeCompletion(value);
 
-    expect(await store.completions({ consumer: "first" })).toHaveLength(1);
-    await store.ackCompletion("first", 1);
-    expect(await store.completions({ consumer: "first" })).toEqual([]);
-    expect(await store.completions({ consumer: "second" })).toHaveLength(1);
-    await expect(store.ackCompletion("first", 2)).rejects.toMatchObject({
+    expect(await store.completions({ consumer: "first", ownerSessionKey: "session-a" })).toHaveLength(1);
+    await store.ackCompletion("first", "session-a", 1);
+    expect(await store.completions({ consumer: "first", ownerSessionKey: "session-a" })).toEqual([]);
+    expect(await store.completions({ consumer: "second", ownerSessionKey: "session-a" })).toHaveLength(1);
+    await expect(store.ackCompletion("first", "session-a", 2)).rejects.toMatchObject({
       code: "INVALID_COMPLETION_CURSOR",
     });
   });

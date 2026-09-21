@@ -425,6 +425,7 @@ describe("durable lifecycle", () => {
       {
         version: 1,
         id,
+        ownerSessionKey: "integration-session",
         tmuxSession: "pi-sa-notify1",
         createdAt: new Date().toISOString(),
         cwd: root,
@@ -464,7 +465,9 @@ describe("durable lifecycle", () => {
     const pi = {
       sendMessage: (msg: any) => messages.push(msg),
     };
-    const notifier = new CompletionNotifier(manager, pi as any);
+    const notifier = new CompletionNotifier(manager, pi as any, {
+      ownerSessionKey: "integration-session",
+    });
 
     // Wait for the worker to finish turn 1 in the background
     await waitFor(async () => {
@@ -520,6 +523,7 @@ describe("durable lifecycle", () => {
     const restartedNotifier = new CompletionNotifier(
       new Manager({ store: new ProtocolStore(root) }),
       { sendMessage: (msg: any) => restartedMessages.push(msg) } as any,
+      { ownerSessionKey: "integration-session" },
     );
     await restartedNotifier.poll();
     expect(restartedMessages).toHaveLength(0);

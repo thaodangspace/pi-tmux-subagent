@@ -10,7 +10,7 @@ import {
 } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { SubagentError, workerId, type WorkerId } from "../types.js";
 import type {
   CompletionFeedEntry,
@@ -158,7 +158,10 @@ export class ProtocolStore {
   async writeResult(value: WorkerResult): Promise<void> {
     await atomicJson(this.path(value.id, "result.json"), value);
   }
-  async writeCompletion(value: WorkerCompletion): Promise<void> {
+  async writeCompletion(
+    value: WorkerCompletion,
+    ownerOverride?: string | null,
+  ): Promise<void> {
     await mkdir(this.root, { recursive: true, mode: 0o700 });
     const lock = join(this.root, ".completions.lock");
     await this.acquire(lock);
@@ -174,9 +177,19 @@ export class ProtocolStore {
           completion.status === value.status,
       );
       if (!existing) {
+        let ownerSessionKey: string | null = ownerOverride ?? null;
+        if (ownerOverride === undefined) {
+          try {
+            ownerSessionKey =
+              (await this.readMeta(value.id)).ownerSessionKey ?? null;
+          } catch (error: any) {
+            if (error.code !== "ENOENT") throw error;
+          }
+        }
         const entry: CompletionFeedEntry = {
           version: 1,
           cursor: lastCursor + 1,
+          ownerSessionKey,
           completion: value,
         };
         await appendFile(feedPath, `${JSON.stringify(entry)}\n`, {
@@ -194,34 +207,48 @@ export class ProtocolStore {
   }
 
   async completions(query: CompletionQuery): Promise<CompletionFeedEntry[]> {
-    this.consumerPath(query.consumer);
+    this.consumerPath(query.consumer, query.ownerSessionKey);
     const after =
       query.after === undefined
-        ? await this.readCompletionCursor(query.consumer)
+        ? await this.readCompletionCursor(query.consumer, query.ownerSessionKey)
         : this.validCursor(query.after);
     return (await this.readCompletionFeed()).filter(
-      (entry) => entry.cursor > after,
+      (entry) =>
+        entry.cursor > after &&
+        entry.ownerSessionKey === query.ownerSessionKey,
     );
   }
 
-  async ackCompletion(consumer: string, cursor: number): Promise<void> {
+  async ackCompletion(
+    consumer: string,
+    ownerSessionKey: string,
+    cursor: number,
+  ): Promise<void> {
     const value = this.validCursor(cursor);
-    const cursorPath = this.consumerPath(consumer);
+    const cursorPath = this.consumerPath(consumer, ownerSessionKey);
     const lock = `${cursorPath}.lock`;
     await mkdir(dirname(cursorPath), { recursive: true, mode: 0o700 });
     await this.acquire(lock);
     try {
       const entries = await this.readCompletionFeed();
-      const maximum = entries.at(-1)?.cursor ?? 0;
-      if (value > maximum) {
+      const entry = entries.find((candidate) => candidate.cursor === value);
+      if (!entry || entry.ownerSessionKey !== ownerSessionKey) {
         throw new SubagentError(
           "INVALID_COMPLETION_CURSOR",
-          `Completion cursor ${value} has not been published`,
+          `Completion cursor ${value} has not been published for this owner`,
         );
       }
-      const current = await this.readCompletionCursor(consumer);
+      const current = await this.readCompletionCursor(
+        consumer,
+        ownerSessionKey,
+      );
       if (value > current) {
-        await atomicJson(cursorPath, { version: 1, consumer, cursor: value });
+        await atomicJson(cursorPath, {
+          version: 1,
+          consumer,
+          ownerSessionKey,
+          cursor: value,
+        });
       }
     } finally {
       await rm(lock, { recursive: true, force: true });
@@ -246,7 +273,12 @@ export class ProtocolStore {
         if (entry.cursor !== entries.length + 1 || !entry.completion) {
           throw new Error("invalid cursor");
         }
-        entries.push(entry);
+        // Records produced before owner routing are deliberately unbound and
+        // must never be delivered automatically to an arbitrary Pi session.
+        entries.push({
+          ...entry,
+          ownerSessionKey: entry.ownerSessionKey ?? null,
+        });
       } catch (error) {
         if (index === lines.length - 1 && !text.endsWith("\n")) break;
         throw new SubagentError(
@@ -259,14 +291,24 @@ export class ProtocolStore {
     return entries;
   }
 
-  private consumerPath(consumer: string): string {
+  private consumerPath(consumer: string, ownerSessionKey: string): string {
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(consumer)) {
       throw new SubagentError(
         "INVALID_COMPLETION_CONSUMER",
         `Invalid completion consumer: ${consumer}`,
       );
     }
-    return join(this.root, "consumers", `${consumer}.json`);
+    if (!ownerSessionKey) {
+      throw new SubagentError(
+        "INVALID_COMPLETION_OWNER",
+        "Completion owner session key must not be empty",
+      );
+    }
+    const ownerHash = createHash("sha256")
+      .update(ownerSessionKey)
+      .digest("hex")
+      .slice(0, 24);
+    return join(this.root, "consumers", `${consumer}-${ownerHash}.json`);
   }
 
   private validCursor(cursor: number): number {
@@ -279,10 +321,13 @@ export class ProtocolStore {
     return cursor;
   }
 
-  private async readCompletionCursor(consumer: string): Promise<number> {
+  private async readCompletionCursor(
+    consumer: string,
+    ownerSessionKey: string,
+  ): Promise<number> {
     try {
       const checkpoint = JSON.parse(
-        await readFile(this.consumerPath(consumer), "utf8"),
+        await readFile(this.consumerPath(consumer, ownerSessionKey), "utf8"),
       ) as { cursor: number };
       return this.validCursor(checkpoint.cursor);
     } catch (error: any) {

@@ -79,12 +79,12 @@ describe("completion notifier", () => {
       "completed",
       "Done task 1",
     );
-    await store.writeCompletion(completion);
+    await store.writeCompletion(completion, "session-a");
 
     const sendMessage = vi.fn();
     const pi = { sendMessage };
 
-    const notifier = new CompletionNotifier(manager, pi as any);
+    const notifier = new CompletionNotifier(manager, pi as any, { ownerSessionKey: "session-a" });
     await notifier.poll();
 
     expect(sendMessage).toHaveBeenCalledTimes(1);
@@ -118,12 +118,12 @@ describe("completion notifier", () => {
       "failed",
       "Process exited with code 1",
     );
-    await store.writeCompletion(failure);
+    await store.writeCompletion(failure, "session-a");
 
     const sendMessage = vi.fn();
     const pi = { sendMessage };
 
-    const notifier = new CompletionNotifier(manager, pi as any);
+    const notifier = new CompletionNotifier(manager, pi as any, { ownerSessionKey: "session-a" });
     await notifier.poll();
 
     expect(sendMessage).toHaveBeenCalledTimes(1);
@@ -145,10 +145,45 @@ describe("completion notifier", () => {
     );
   });
 
+  it("routes interleaved completions only to their owning sessions", async () => {
+    const { store, manager } = await fixture();
+    const completionA = makeCompletion("worker-a", 1);
+    const completionB = makeCompletion("worker-b", 1);
+    const unowned = makeCompletion("worker-cli", 1);
+    // B finishes first; global feed order must not affect owner routing.
+    await store.writeCompletion(completionB, "session-b");
+    await store.writeCompletion(completionA, "session-a");
+    await store.writeCompletion(unowned, null);
+
+    const sentA: any[] = [];
+    const sentB: any[] = [];
+    const notifierA = new CompletionNotifier(
+      manager,
+      { sendMessage: (message: any) => sentA.push(message) } as any,
+      { ownerSessionKey: "session-a", consumer: "shared-consumer" },
+    );
+    const notifierB = new CompletionNotifier(
+      manager,
+      { sendMessage: (message: any) => sentB.push(message) } as any,
+      { ownerSessionKey: "session-b", consumer: "shared-consumer" },
+    );
+
+    await notifierA.poll();
+    await notifierB.poll();
+    expect(sentA.map((message) => message.details.id)).toEqual(["worker-a"]);
+    expect(sentB.map((message) => message.details.id)).toEqual(["worker-b"]);
+
+    // Independent owner checkpoints prevent either notifier from suppressing
+    // the other's later delivery, and unowned CLI work leaks to neither.
+    await Promise.all([notifierA.poll(), notifierB.poll()]);
+    expect(sentA).toHaveLength(1);
+    expect(sentB).toHaveLength(1);
+  });
+
   it("does not ack cursor if sendMessage throws, and retries on next poll", async () => {
     const { store, manager } = await fixture();
     const completion = makeCompletion("worker-err", 1);
-    await store.writeCompletion(completion);
+    await store.writeCompletion(completion, "session-a");
 
     let fail = true;
     const errors: unknown[] = [];
@@ -158,6 +193,7 @@ describe("completion notifier", () => {
     const pi = { sendMessage };
 
     const notifier = new CompletionNotifier(manager, pi as any, {
+      ownerSessionKey: "session-a",
       onError: (err) => errors.push(err),
     });
 
@@ -178,12 +214,13 @@ describe("completion notifier", () => {
 
   it("does not redeliver already acknowledged completions across notifier restarts", async () => {
     const { root, store } = await fixture();
-    await store.writeCompletion(makeCompletion("worker-persist", 1));
+    await store.writeCompletion(makeCompletion("worker-persist", 1), "session-a");
 
     const sent1: any[] = [];
     const notifier1 = new CompletionNotifier(
       new Manager({ store: new ProtocolStore(root) }),
       { sendMessage: (msg: any) => sent1.push(msg) } as any,
+      { ownerSessionKey: "session-a" },
     );
     await notifier1.poll();
     expect(sent1).toHaveLength(1);
@@ -194,6 +231,7 @@ describe("completion notifier", () => {
     const notifier2 = new CompletionNotifier(
       new Manager({ store: new ProtocolStore(root) }),
       { sendMessage: (msg: any) => sent2.push(msg) } as any,
+      { ownerSessionKey: "session-a" },
     );
     await notifier2.poll();
     expect(sent2).toHaveLength(0);
@@ -223,6 +261,8 @@ describe("completion notifier", () => {
       manager as any,
       { sendMessage } as any,
       {
+        ownerSessionKey: "session-a",
+        consumer: "test-consumer",
         intervalMs: 100,
       },
     );
@@ -231,7 +271,7 @@ describe("completion notifier", () => {
 
     await vi.advanceTimersByTimeAsync(100);
     expect(sendMessage).toHaveBeenCalledTimes(1);
-    expect(manager.ackCompletion).toHaveBeenCalledWith("pi-extension", 1);
+    expect(manager.ackCompletion).toHaveBeenCalledWith("test-consumer", "session-a", 1);
 
     notifier.dispose();
 

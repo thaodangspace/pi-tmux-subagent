@@ -8,15 +8,18 @@ import { ActivityWatcher } from "./watcher.js";
 export default function extension(pi: ExtensionAPI): void {
   const manager = new Manager();
   let watcher: ActivityWatcher | undefined;
-  const notifier = new CompletionNotifier(manager, pi);
-  void notifier.start();
+  let notifier: CompletionNotifier | undefined;
 
   registerSubagentTool(pi, manager);
   registerSubagentCommands(pi, manager);
 
   pi.on("session_start", async (_event, ctx) => {
     watcher?.dispose();
+    notifier?.dispose();
     watcher = undefined;
+    notifier = new CompletionNotifier(manager, pi, {
+      ownerSessionKey: ctx.sessionManager.getSessionId(),
+    });
     if (ctx.hasUI) {
       watcher = new ActivityWatcher(manager, ctx);
       await watcher.start();
@@ -26,7 +29,8 @@ export default function extension(pi: ExtensionAPI): void {
 
   pi.on("session_shutdown", () => {
     watcher?.dispose();
+    notifier?.dispose();
     watcher = undefined;
-    notifier.dispose();
+    notifier = undefined;
   });
 }
