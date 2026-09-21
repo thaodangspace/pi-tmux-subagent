@@ -373,4 +373,111 @@ describe("crash recovery across turn boundaries", () => {
     runner.monitor?.stop();
     await runner.recordQueue;
   });
+
+  it("follow-up turn continuity after repaired startup and legacy migration", async () => {
+    const { store, id } = await fixture("worker-followup-continuity");
+
+    // Seed legacy inconsistent state (Finding 3):
+    // turn_interrupted exists, result.turn = 1, completion.turn = 1, but state.turn = 0
+    await store.appendCommand(id, { type: "prompt", text: "legacy unstarted" });
+    await store.appendEvent(id, { type: "command_ack", commandSeq: 1 });
+    const interruptedEvent = await store.appendEvent(id, {
+      type: "turn_interrupted",
+      commandSeq: 1,
+      data: "Turn interrupted before start by runner crash/restart",
+    });
+    await store.writeState({
+      version: 1,
+      id,
+      status: "waiting",
+      turn: 0,
+      lastCommandSeq: 1,
+      lastEventSeq: interruptedEvent.seq,
+    });
+    await store.writeResult({
+      version: 1,
+      id,
+      turn: 1,
+      commandSeq: 1,
+      resultSeq: interruptedEvent.seq,
+      eventSeq: interruptedEvent.seq,
+      status: "failed",
+      text: "Turn interrupted before start by runner crash/restart",
+      completedAt: interruptedEvent.at,
+    });
+    await store.writeCompletion({
+      version: 1,
+      kind: "turn",
+      id,
+      turn: 1,
+      commandSeq: 1,
+      resultSeq: interruptedEvent.seq,
+      status: "failed",
+      summary: "Turn interrupted before start by runner crash/restart",
+      hasDetails: true,
+      completedAt: interruptedEvent.at,
+    });
+
+    // 1. Restart runner using current code
+    const runner = new Runner(store.dir(id)) as any;
+    runner.rpc = {
+      start: vi.fn(),
+      stop: vi.fn(),
+      on: vi.fn(),
+      prompt: vi.fn(async () => {}),
+    };
+
+    const runPromise = runner.run();
+    runner.stopped = true;
+    if (runner.heartbeat) clearInterval(runner.heartbeat);
+    await runPromise.catch(() => undefined);
+
+    // Verify state was repaired on startup
+    const repairedState = await store.readState(id);
+    expect(repairedState.turn).toBe(1);
+    expect(runner.currentTurn).toBe(1);
+
+    // 2. Execute follow-up turn #2
+    runner.stopped = false;
+    runner.rpc = {
+      prompt: vi.fn(async () => {}),
+      steer: vi.fn(async () => {}),
+      abort: vi.fn(async () => {}),
+      stop: vi.fn(),
+    };
+    await runner.execute({ version: 1, seq: 2, at: "a", type: "send", text: "prompt #2 live turn" });
+    await runner.onRpc({
+      type: "agent_start",
+      data: { turnContext: { turn: 2, initiatingCommandSeq: 2 } },
+    });
+    await runner.onRpc({
+      type: "message_end",
+      message: { role: "assistant", content: [{ type: "text", text: "prompt #2 result" }] },
+    });
+    await runner.onRpc({ type: "agent_settled" });
+
+    // Assert turn continuity: state.turn === result.turn === completion.turn === 2
+    const finalState = await store.readState(id);
+    expect(finalState.turn).toBe(2);
+
+    const result2 = await store.readResult(id);
+    expect(result2).toBeDefined();
+    expect(result2?.turn).toBe(2);
+    expect(result2?.commandSeq).toBe(2);
+    expect(result2?.status).toBe("completed");
+
+    const completion2 = await store.readCompletion(id);
+    expect(completion2).toBeDefined();
+    expect(completion2?.turn).toBe(2);
+    expect(completion2?.commandSeq).toBe(2);
+    expect(completion2?.status).toBe("completed");
+
+    expect(finalState.turn).toBe(result2?.turn);
+    expect(result2?.turn).toBe(completion2?.turn);
+
+    runner.stopped = true;
+    if (runner.heartbeat) clearInterval(runner.heartbeat);
+    runner.monitor?.stop();
+    await runner.recordQueue;
+  });
 });

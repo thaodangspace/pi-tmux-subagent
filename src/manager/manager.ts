@@ -240,8 +240,41 @@ export class Manager {
       return (await this.store.appendCommand(value, { type: "abort" })).seq;
     });
   }
+  /**
+   * Stop worker execution idempotently.
+   * - If a stop command is already pending, returns the pending command seq.
+   * - If the worker is already stopped, returns the prior stop command seq (or lastCommandSeq).
+   * - If the worker is in another terminal status ('killed', 'failed', 'orphaned', 'completed'),
+   *   rejects with WORKER_TERMINAL.
+   */
   async stop(id: string): Promise<number> {
-    return this.withControllableWorker(id, "stop", async (value, state) => {
+    const value = workerId(id);
+    return this.store.withWorkerLock(value, async () => {
+      try {
+        await this.store.readMeta(value);
+      } catch (error: any) {
+        if (error?.code === "ENOENT") {
+          throw new SubagentError(
+            "WORKER_NOT_FOUND",
+            `Worker not found: ${value}`,
+          );
+        }
+        throw error;
+      }
+      const state = await this.status(value);
+      if (state.status === "stopped") {
+        const commands = await this.store
+          .readLogTail<WorkerCommand>(value, "commands", 20)
+          .catch(() => []);
+        const lastStop = [...commands].reverse().find((cmd) => cmd.type === "stop");
+        return lastStop ? lastStop.seq : state.lastCommandSeq;
+      }
+      if (TERMINAL_WORKER_STATUSES.has(state.status)) {
+        throw new SubagentError(
+          "WORKER_TERMINAL",
+          `Cannot stop worker ${value} in terminal status '${state.status}'`,
+        );
+      }
       const commands = await this.store
         .readLogTail<WorkerCommand>(value, "commands", 10)
         .catch(() => []);
@@ -437,7 +470,15 @@ export class Manager {
       // tmux termination kills the tagged pane or standalone session and its
       // supervised runner/RPC process tree. The adapter treats absence as safe.
       await this.tmux.terminate(value);
-      const current = await this.store.readState(value);
+      let current = await this.store.reconcileState(value);
+
+      // Durably resolve any accepted-but-unprocessed commands before/with terminal transition
+      current = await this.store.resolveUnprocessedCommands(
+        value,
+        "Force-terminated by supervisor",
+        "killed",
+      );
+
       if (current.status === "killed") return current;
 
       const wasActiveTurn =

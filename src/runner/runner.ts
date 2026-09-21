@@ -64,9 +64,9 @@ export class Runner {
 
   async run(): Promise<void> {
     let meta = await this.store.readMeta(this.id);
-    const state = await this.store.readState(this.id).catch(() => undefined);
-    this.lastProcessedCommandSeq = state?.lastCommandSeq ?? 0;
-    this.currentTurn = state?.turn ?? 0;
+    const state = await this.store.reconcileState(this.id);
+    this.lastProcessedCommandSeq = state.lastCommandSeq;
+    this.currentTurn = state.turn;
 
     this.monitor = new SubagentMonitor({
       id: this.id,

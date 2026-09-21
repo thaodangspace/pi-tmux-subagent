@@ -14,7 +14,12 @@ export function reduceEvents(
   return events.reduce(
     (state, event) => {
       const next = { ...state, lastEventSeq: event.seq, lastEventAt: event.at };
-      if (event.type === "command_ack" && event.commandSeq) {
+      if (
+        (event.type === "command_ack" ||
+          event.type === "command_cancelled" ||
+          event.type === "command_rejected") &&
+        event.commandSeq !== undefined
+      ) {
         next.lastCommandSeq = Math.max(next.lastCommandSeq, event.commandSeq);
       }
 

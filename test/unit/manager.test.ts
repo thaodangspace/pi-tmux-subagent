@@ -6,6 +6,7 @@ import { Manager } from "../../src/manager/manager.js";
 import { ProtocolStore } from "../../src/protocol/store.js";
 import { TmuxAdapter, type Executor } from "../../src/tmux/adapter.js";
 import { SubagentError, workerId } from "../../src/types.js";
+import type { WorkerEvent } from "../../src/protocol/types.js";
 
 const roots: string[] = [];
 afterEach(async () =>
@@ -202,7 +203,6 @@ describe("manager command delivery", () => {
 
   it.each([
     "failed",
-    "stopped",
     "killed",
     "orphaned",
     "completed",
@@ -254,11 +254,11 @@ describe("manager command delivery", () => {
     expect((commands[0] as any).text).toBe("initial");
   });
 
-  it("concurrency race test: termination winning transition rejects late send and leaves no stranded command", async () => {
-    const root = await mkdtemp(join(tmpdir(), "pi-sa-race-"));
+  it("stopped worker rejects send, steer, abort but stop is idempotent", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-sa-stopped-"));
     roots.push(root);
     const store = new ProtocolStore(root);
-    const id = workerId("race-worker");
+    const id = workerId("term-stopped");
     await store.create(
       {
         version: 1,
@@ -266,50 +266,279 @@ describe("manager command delivery", () => {
         tmuxSession: `pi-sa-${id}`,
         createdAt: "2026-01-01T00:00:00Z",
         cwd: root,
-        launch: { task: "race" },
-        runnerPid: process.pid,
+        launch: { task: "stopped test" },
       },
       {
         version: 1,
         id,
-        status: "waiting",
+        status: "stopped",
         turn: 1,
-        lastCommandSeq: 1,
-        lastEventSeq: 0,
+        lastCommandSeq: 2,
+        lastEventSeq: 2,
       },
     );
     await store.appendCommand(id, { type: "prompt", text: "initial" });
+    await store.appendCommand(id, { type: "stop" });
 
-    const terminate = vi.fn(async () => {});
-    const manager = new Manager({
-      store,
-      tmux: { terminate, exists: vi.fn(async () => true) } as any,
-    });
+    const manager = new Manager({ store, tmux: { exists: vi.fn(async () => false) } as any });
 
-    // Run termination and late send concurrently
-    const [termResult, sendResult] = await Promise.allSettled([
-      manager.forceTerminate(id),
-      manager.send(id, "late command"),
-    ]);
+    await expect(manager.send(id, "late send")).rejects.toMatchObject({ code: "WORKER_TERMINAL" });
+    await expect(manager.steer(id, "late steer")).rejects.toMatchObject({ code: "WORKER_TERMINAL" });
+    await expect(manager.abort(id)).rejects.toMatchObject({ code: "WORKER_TERMINAL" });
 
-    expect(termResult.status).toBe("fulfilled");
-    const finalState = await manager.status(id);
-    expect(finalState.status).toBe("killed");
+    // Stop on an already stopped worker succeeds idempotently and returns prior stop seq
+    const stopSeq = await manager.stop(id);
+    expect(stopSeq).toBe(2);
 
+    // Assert no new command was appended
     const commands = await store.readLog(id, "commands");
-    if (sendResult.status === "rejected") {
-      expect((sendResult.reason as any).code).toBe("WORKER_TERMINAL");
-      expect(commands.map((c: any) => c.text)).not.toContain("late command");
-    } else {
-      // If send won the lock, it was accepted BEFORE forceTerminate won the transition
-      expect(commands.map((c: any) => c.text)).toContain("late command");
-    }
+    expect(commands).toHaveLength(2);
+  });
 
-    // Now that worker is definitely killed, any new command MUST be rejected
-    await expect(manager.send(id, "after killed")).rejects.toMatchObject({
-      code: "WORKER_TERMINAL",
+  describe("stop idempotency semantics", () => {
+    it("deduplicates pending stop command when another stop is already pending", async () => {
+      const root = await mkdtemp(join(tmpdir(), "pi-sa-stop-pending-"));
+      roots.push(root);
+      const store = new ProtocolStore(root);
+      const id = workerId("stop-pending");
+      await store.create(
+        {
+          version: 1,
+          id,
+          tmuxSession: `pi-sa-${id}`,
+          createdAt: "2026-01-01T00:00:00Z",
+          cwd: root,
+          launch: { task: "stop pending test" },
+        },
+        {
+          version: 1,
+          id,
+          status: "running",
+          turn: 1,
+          lastCommandSeq: 1,
+          lastEventSeq: 1,
+        },
+      );
+      await store.appendCommand(id, { type: "prompt", text: "initial" });
+
+      const manager = new Manager({ store, tmux: { exists: vi.fn(async () => true) } as any });
+
+      const firstStop = await manager.stop(id);
+      expect(firstStop).toBe(2);
+
+      // Second stop while seq 2 is still pending (> lastCommandSeq=1)
+      const secondStop = await manager.stop(id);
+      expect(secondStop).toBe(2);
+
+      const commands = await store.readLog(id, "commands");
+      expect(commands).toHaveLength(2);
     });
-    const finalCommands = await store.readLog(id, "commands");
-    expect(finalCommands.map((c: any) => c.text)).not.toContain("after killed");
+
+    it.each(["killed", "failed", "orphaned"] as const)(
+      "rejects stop when worker is in terminal status '%s'",
+      async (status) => {
+        const root = await mkdtemp(join(tmpdir(), `pi-sa-stop-term-${status}-`));
+        roots.push(root);
+        const store = new ProtocolStore(root);
+        const id = workerId(`stop-term-${status}`);
+        await store.create(
+          {
+            version: 1,
+            id,
+            tmuxSession: `pi-sa-${id}`,
+            createdAt: "2026-01-01T00:00:00Z",
+            cwd: root,
+            launch: { task: "terminal stop test" },
+          },
+          {
+            version: 1,
+            id,
+            status,
+            turn: 1,
+            lastCommandSeq: 1,
+            lastEventSeq: 1,
+          },
+        );
+
+        const manager = new Manager({ store, tmux: { exists: vi.fn(async () => false) } as any });
+        await expect(manager.stop(id)).rejects.toMatchObject({
+          code: "WORKER_TERMINAL",
+        });
+      },
+    );
+  });
+
+  describe("accepted-command terminal resolution (Finding 1)", () => {
+    it("interleaving 1: send wins lock first -> forceTerminate durably cancels accepted command", async () => {
+      const root = await mkdtemp(join(tmpdir(), "pi-sa-order1-"));
+      roots.push(root);
+      const store = new ProtocolStore(root);
+      const id = workerId("order1-worker");
+      await store.create(
+        {
+          version: 1,
+          id,
+          tmuxSession: `pi-sa-${id}`,
+          createdAt: "2026-01-01T00:00:00Z",
+          cwd: root,
+          launch: { task: "order1" },
+          runnerPid: process.pid,
+        },
+        {
+          version: 1,
+          id,
+          status: "waiting",
+          turn: 1,
+          lastCommandSeq: 1,
+          lastEventSeq: 1,
+        },
+      );
+      await store.appendCommand(id, { type: "prompt", text: "initial" });
+      await store.appendEvent(id, { type: "command_ack", commandSeq: 1 });
+
+      const manager = new Manager({
+        store,
+        tmux: { terminate: vi.fn(async () => {}), exists: vi.fn(async () => true) } as any,
+      });
+
+      // Send wins first
+      const sendSeq = await manager.send(id, "late command");
+      expect(sendSeq).toBe(2);
+
+      // forceTerminate runs after send
+      const killedState = await manager.forceTerminate(id);
+      expect(killedState.status).toBe("killed");
+      expect(killedState.lastCommandSeq).toBe(2);
+
+      // Command exists in commands.jsonl
+      const commands = await store.readLog(id, "commands");
+      expect(commands).toHaveLength(2);
+      expect((commands[1] as any).text).toBe("late command");
+
+      // Command has durable terminal resolution event in events.jsonl
+      const events = await store.readLog<WorkerEvent>(id, "events");
+      const cancelledEvent = events.find(
+        (e) => e.type === "command_cancelled" && e.commandSeq === 2,
+      );
+      expect(cancelledEvent).toBeDefined();
+      expect(cancelledEvent?.data).toMatchObject({
+        reason: "Force-terminated by supervisor",
+        terminalStatus: "killed",
+      });
+
+      // No accepted command remains unresolved/pending
+      const finalState = await manager.status(id);
+      expect(finalState.lastCommandSeq).toBeGreaterThanOrEqual(sendSeq);
+    });
+
+    it("interleaving 2: forceTerminate wins lock first -> send rejects with WORKER_TERMINAL and appends nothing", async () => {
+      const root = await mkdtemp(join(tmpdir(), "pi-sa-order2-"));
+      roots.push(root);
+      const store = new ProtocolStore(root);
+      const id = workerId("order2-worker");
+      await store.create(
+        {
+          version: 1,
+          id,
+          tmuxSession: `pi-sa-${id}`,
+          createdAt: "2026-01-01T00:00:00Z",
+          cwd: root,
+          launch: { task: "order2" },
+          runnerPid: process.pid,
+        },
+        {
+          version: 1,
+          id,
+          status: "waiting",
+          turn: 1,
+          lastCommandSeq: 1,
+          lastEventSeq: 1,
+        },
+      );
+      await store.appendCommand(id, { type: "prompt", text: "initial" });
+      await store.appendEvent(id, { type: "command_ack", commandSeq: 1 });
+
+      const manager = new Manager({
+        store,
+        tmux: { terminate: vi.fn(async () => {}), exists: vi.fn(async () => true) } as any,
+      });
+
+      // forceTerminate wins first
+      const killedState = await manager.forceTerminate(id);
+      expect(killedState.status).toBe("killed");
+
+      // send runs after forceTerminate
+      await expect(manager.send(id, "late command")).rejects.toMatchObject({
+        code: "WORKER_TERMINAL",
+      });
+
+      // No command was appended
+      const commands = await store.readLog(id, "commands");
+      expect(commands).toHaveLength(1);
+    });
+
+    it("concurrency race test: concurrent send and forceTerminate leaves no stranded command", async () => {
+      const root = await mkdtemp(join(tmpdir(), "pi-sa-race-"));
+      roots.push(root);
+      const store = new ProtocolStore(root);
+      const id = workerId("race-worker");
+      await store.create(
+        {
+          version: 1,
+          id,
+          tmuxSession: `pi-sa-${id}`,
+          createdAt: "2026-01-01T00:00:00Z",
+          cwd: root,
+          launch: { task: "race" },
+          runnerPid: process.pid,
+        },
+        {
+          version: 1,
+          id,
+          status: "waiting",
+          turn: 1,
+          lastCommandSeq: 1,
+          lastEventSeq: 0,
+        },
+      );
+      await store.appendCommand(id, { type: "prompt", text: "initial" });
+
+      const terminate = vi.fn(async () => {});
+      const manager = new Manager({
+        store,
+        tmux: { terminate, exists: vi.fn(async () => true) } as any,
+      });
+
+      const [termResult, sendResult] = await Promise.allSettled([
+        manager.forceTerminate(id),
+        manager.send(id, "late command"),
+      ]);
+
+      expect(termResult.status).toBe("fulfilled");
+      const finalState = await manager.status(id);
+      expect(finalState.status).toBe("killed");
+
+      const commands = await store.readLog(id, "commands");
+      const events = await store.readLog(id, "events");
+
+      if (sendResult.status === "rejected") {
+        expect((sendResult.reason as any).code).toBe("WORKER_TERMINAL");
+        expect(commands.map((c: any) => c.text)).not.toContain("late command");
+      } else {
+        // Send won the lock: must be durably resolved with command_cancelled
+        expect(commands.map((c: any) => c.text)).toContain("late command");
+        const cancelled = events.find(
+          (e: any) => e.type === "command_cancelled" && e.commandSeq === sendResult.value,
+        );
+        expect(cancelled).toBeDefined();
+        expect(finalState.lastCommandSeq).toBeGreaterThanOrEqual(sendResult.value);
+      }
+
+      await expect(manager.send(id, "after killed")).rejects.toMatchObject({
+        code: "WORKER_TERMINAL",
+      });
+      const finalCommands = await store.readLog(id, "commands");
+      expect(finalCommands.map((c: any) => c.text)).not.toContain("after killed");
+    });
   });
 });

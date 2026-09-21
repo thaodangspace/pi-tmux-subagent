@@ -824,6 +824,12 @@ export class ProtocolStore {
           lastEventSeq: 0,
         };
       }
+      if (cached.lastEventSeq > lastSeq) {
+        cached = {
+          ...cached,
+          lastEventSeq: lastSeq,
+        };
+      }
 
       const unseenEvents = await this.readLog<WorkerEvent>(
         id,
@@ -838,6 +844,136 @@ export class ProtocolStore {
       await this.writeState(nextState);
 
       return { event: record, state: nextState };
+    });
+  }
+  async reconcileState(id: WorkerId | string): Promise<WorkerState> {
+    const wid = workerId(String(id));
+    return this.withWorkerLock(wid, async () => {
+      let cached: WorkerState | undefined;
+      try {
+        cached = await this.readState(wid);
+      } catch {
+        cached = undefined;
+      }
+
+      let state: WorkerState;
+      if (cached && cached.lastEventSeq > 0) {
+        try {
+          const unseenEvents =
+            cached.lastEventOffset !== undefined
+              ? await this.readLog<WorkerEvent>(
+                  wid,
+                  "events",
+                  cached.lastEventSeq + 1,
+                  undefined,
+                  cached.lastEventOffset,
+                )
+              : await this.readLog<WorkerEvent>(
+                  wid,
+                  "events",
+                  cached.lastEventSeq + 1,
+                );
+          state = reduceEvents(cached, unseenEvents);
+        } catch {
+          // Fall back to full rebuild when unseen log reading fails
+          const events = await this.readLog<WorkerEvent>(wid, "events").catch(() => []);
+          state = reduceEvents(
+            {
+              version: 1,
+              id: wid,
+              status: "starting",
+              turn: 0,
+              lastCommandSeq: 0,
+              lastEventSeq: 0,
+            },
+            events,
+          );
+        }
+      } else {
+        const events = await this.readLog<WorkerEvent>(wid, "events").catch(() => []);
+        state = reduceEvents(
+          {
+            version: 1,
+            id: wid,
+            status: "starting",
+            turn: 0,
+            lastCommandSeq: 0,
+            lastEventSeq: 0,
+          },
+          events,
+        );
+      }
+
+      // Finding 3: Invariant-based upgrade repair for registries affected by legacy pre-#41 turn gaps.
+      // Enforce state.turn >= latest durable turn identity from immutable result, completion, or event history.
+      const [latestResult, latestCompletion] = await Promise.all([
+        this.readResult(wid).catch(() => undefined),
+        this.readCompletion(wid).catch(() => undefined),
+      ]);
+      const authoritativeTurn = Math.max(
+        latestResult?.turn ?? 0,
+        latestCompletion?.turn ?? 0,
+      );
+      if (state.turn < authoritativeTurn) {
+        const allEvents = await this.readLog<WorkerEvent>(wid, "events").catch(() => []);
+        state = reduceEvents(
+          {
+            version: 1,
+            id: wid,
+            status: "starting",
+            turn: 0,
+            lastCommandSeq: 0,
+            lastEventSeq: 0,
+          },
+          allEvents,
+        );
+        if (state.turn < authoritativeTurn) {
+          state.turn = authoritativeTurn;
+        }
+      }
+
+      try {
+        const eventsPath = this.path(wid, "events.jsonl");
+        const stats = await stat(eventsPath);
+        state.lastEventOffset = stats.size;
+      } catch {
+        // ignore if events.jsonl does not exist
+      }
+
+      if (!cached || JSON.stringify(state) !== JSON.stringify(cached)) {
+        await this.writeState(state);
+      }
+
+      return state;
+    });
+  }
+  async resolveUnprocessedCommands(
+    id: WorkerId | string,
+    reason: string,
+    terminalStatus: string,
+  ): Promise<WorkerState> {
+    const wid = workerId(String(id));
+    return this.withWorkerLock(wid, async () => {
+      let state = await this.reconcileState(wid);
+      const unconsumed = await this.readLog<WorkerCommand>(
+        wid,
+        "commands",
+        state.lastCommandSeq + 1,
+      ).catch(() => []);
+      for (const cmd of unconsumed) {
+        if (cmd.seq > state.lastCommandSeq) {
+          const { state: nextState } = await this.appendEventAndProjectState(wid, {
+            type: "command_cancelled",
+            commandSeq: cmd.seq,
+            data: {
+              reason,
+              terminalStatus,
+            },
+          });
+          state = nextState;
+        }
+      }
+      return state;
     });
   }
   private async append(

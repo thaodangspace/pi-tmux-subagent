@@ -587,5 +587,205 @@ describe("recovery", () => {
       expect(durableState.turn).toBe(3);
       expect(runner.currentTurn).toBe(durableState.turn);
     });
+
+    it("repairs state on runner startup when crash occurs after agent_start event append before state write (Finding 2)", async () => {
+      const root = await mkdtemp(join(tmpdir(), "pi-sa-crash-event-"));
+      roots.push(root);
+      const store = new ProtocolStore(root);
+      const id = workerId("crash-event");
+      await store.create(
+        {
+          version: 1,
+          id,
+          tmuxSession: `pi-sa-${id}`,
+          createdAt: "2026-01-01T00:00:00Z",
+          cwd: root,
+          launch: { task: "crash event" },
+        },
+        {
+          version: 1,
+          id,
+          status: "waiting",
+          turn: 0,
+          lastCommandSeq: 1,
+          lastEventSeq: 1,
+        },
+      );
+      await store.appendCommand(id, { type: "prompt", text: "cmd 1" });
+
+      // Events contain command_ack (seq 1) and agent_start (seq 2), but state.json was not updated before crash
+      await store.appendEvent(id, { type: "command_ack", commandSeq: 1 });
+      await store.appendEvent(id, {
+        type: "agent_start",
+        commandSeq: 1,
+        data: { turnContext: { turn: 1, initiatingCommandSeq: 1 } },
+      });
+
+      // Runner starts up
+      const runner = new Runner(store.dir(id)) as any;
+      runner.rpc = { start: vi.fn(), stop: vi.fn(), on: vi.fn() };
+      const runPromise = runner.run();
+      runner.stopped = true;
+      if (runner.heartbeat) clearInterval(runner.heartbeat);
+      await runPromise.catch(() => undefined);
+
+      // Assert before processing next command:
+      // runner.currentTurn === 1
+      // state.turn === 1
+      // state.lastEventSeq >= 2
+      const durableState = await store.readState(id);
+      expect(runner.currentTurn).toBe(1);
+      expect(durableState.turn).toBe(1);
+      expect(durableState.lastEventSeq).toBeGreaterThanOrEqual(2);
+
+      // Interrupted turn 1 was finalized with failed result and completion
+      const result1 = await store.readResult(id);
+      expect(result1).toMatchObject({ turn: 1, commandSeq: 1, status: "failed" });
+      const completion1 = await store.readCompletion(id);
+      expect(completion1).toMatchObject({ turn: 1, commandSeq: 1, status: "failed" });
+
+      // Execute another live turn and assert continuity
+      runner.stopped = false;
+      runner.rpc = {
+        prompt: vi.fn(async () => {}),
+        steer: vi.fn(async () => {}),
+        abort: vi.fn(async () => {}),
+        stop: vi.fn(),
+      };
+      await runner.execute({ version: 1, seq: 2, at: "a", type: "send", text: "cmd 2" });
+      await runner.onRpc({
+        type: "agent_start",
+        data: { turnContext: { turn: 2, initiatingCommandSeq: 2 } },
+      });
+      await runner.onRpc({
+        type: "message_end",
+        message: { role: "assistant", content: [{ type: "text", text: "cmd 2 result" }] },
+      });
+      await runner.onRpc({ type: "agent_settled" });
+
+      const state2 = await store.readState(id);
+      expect(state2.turn).toBe(2);
+      const result2 = await store.readResult(id);
+      expect(result2?.turn).toBe(2);
+      expect(result2?.commandSeq).toBe(2);
+      expect(result2?.status).toBe("completed");
+      const completion2 = await store.readCompletion(id);
+      expect(completion2?.turn).toBe(2);
+      expect(completion2?.commandSeq).toBe(2);
+      expect(completion2?.status).toBe("completed");
+
+      runner.stopped = true;
+      if (runner.heartbeat) clearInterval(runner.heartbeat);
+      runner.monitor?.stop();
+      await runner.recordQueue;
+    });
+
+    it("migrates and repairs legacy pre-#41 boundary-1b registry so finalized turn is never reused (Finding 3)", async () => {
+      const root = await mkdtemp(join(tmpdir(), "pi-sa-legacy-mig-"));
+      roots.push(root);
+      const store = new ProtocolStore(root);
+      const id = workerId("legacy-mig");
+
+      // Seed the EXACT inconsistent state produced by pre-#41 boundary 1b:
+      // state.turn = 0, state.lastEventSeq = 2 (turn_interrupted event seq)
+      // result.turn = 1, completion.turn = 1
+      await store.create(
+        {
+          version: 1,
+          id,
+          tmuxSession: `pi-sa-${id}`,
+          createdAt: "2026-01-01T00:00:00Z",
+          cwd: root,
+          launch: { task: "legacy boundary 1b" },
+        },
+        {
+          version: 1,
+          id,
+          status: "waiting",
+          turn: 0,
+          lastCommandSeq: 1,
+          lastEventSeq: 2,
+        },
+      );
+      await store.appendCommand(id, { type: "prompt", text: "initial cmd" });
+      await store.appendEvent(id, { type: "command_ack", commandSeq: 1 });
+      await store.appendEvent(id, {
+        type: "turn_interrupted",
+        commandSeq: 1,
+        data: "Turn interrupted before start by runner crash/restart",
+      });
+
+      await store.writeResult({
+        version: 1,
+        id,
+        turn: 1,
+        commandSeq: 1,
+        resultSeq: 2,
+        eventSeq: 2,
+        status: "failed",
+        text: "Turn interrupted before start by runner crash/restart",
+        completedAt: "2026-01-01T00:01:00Z",
+      });
+      await store.writeCompletion({
+        version: 1,
+        kind: "turn",
+        id,
+        turn: 1,
+        commandSeq: 1,
+        resultSeq: 2,
+        status: "failed",
+        summary: "Turn interrupted before start by runner crash/restart",
+        hasDetails: true,
+        completedAt: "2026-01-01T00:01:00Z",
+      });
+
+      // Runner restarts using current code
+      const runner = new Runner(store.dir(id)) as any;
+      runner.rpc = { start: vi.fn(), stop: vi.fn(), on: vi.fn() };
+      const runPromise = runner.run();
+      runner.stopped = true;
+      if (runner.heartbeat) clearInterval(runner.heartbeat);
+      await runPromise.catch(() => undefined);
+
+      // Assert state was repaired and runner started with currentTurn === 1
+      const repairedState = await store.readState(id);
+      expect(repairedState.turn).toBe(1);
+      expect(runner.currentTurn).toBe(1);
+
+      // Execute follow-up turn and assert continuity
+      runner.stopped = false;
+      runner.rpc = {
+        prompt: vi.fn(async () => {}),
+        steer: vi.fn(async () => {}),
+        abort: vi.fn(async () => {}),
+        stop: vi.fn(),
+      };
+      await runner.execute({ version: 1, seq: 2, at: "a", type: "send", text: "cmd 2 follow-up" });
+      await runner.onRpc({
+        type: "agent_start",
+        data: { turnContext: { turn: 2, initiatingCommandSeq: 2 } },
+      });
+      await runner.onRpc({
+        type: "message_end",
+        message: { role: "assistant", content: [{ type: "text", text: "cmd 2 completed" }] },
+      });
+      await runner.onRpc({ type: "agent_settled" });
+
+      const state2 = await store.readState(id);
+      expect(state2.turn).toBe(2);
+      const result2 = await store.readResult(id);
+      expect(result2?.turn).toBe(2);
+      expect(result2?.commandSeq).toBe(2);
+      expect(result2?.status).toBe("completed");
+      const completion2 = await store.readCompletion(id);
+      expect(completion2?.turn).toBe(2);
+      expect(completion2?.commandSeq).toBe(2);
+      expect(completion2?.status).toBe("completed");
+
+      runner.stopped = true;
+      if (runner.heartbeat) clearInterval(runner.heartbeat);
+      runner.monitor?.stop();
+      await runner.recordQueue;
+    });
   });
 });

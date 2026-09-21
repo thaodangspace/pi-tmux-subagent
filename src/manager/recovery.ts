@@ -1,6 +1,5 @@
 import { readdir } from "node:fs/promises";
 import { completionSummary } from "../protocol/completion.js";
-import { reduceEvents } from "../protocol/state.js";
 import type {
   WorkerEvent,
   WorkerMeta,
@@ -80,53 +79,8 @@ export class Recovery {
   async recover(value: string): Promise<WorkerState> {
     const id = workerId(value);
     return this.store.withWorkerLock(id, async () => {
-      const [meta, cached] = await Promise.all([
-        this.store.readMeta(id),
-        this.store.readState(id).catch(() => undefined),
-      ]);
-
-      let state: WorkerState;
-      let newEvents: WorkerEvent[] = [];
-      if (cached && cached.lastEventSeq > 0) {
-        try {
-          newEvents = await this.store.readLog<WorkerEvent>(
-            id,
-            "events",
-            cached.lastEventSeq + 1,
-          );
-          state = reduceEvents(cached, newEvents);
-        } catch {
-          const events = await this.store.readLog<WorkerEvent>(id, "events");
-          state = reduceEvents(
-            {
-              version: 1,
-              id,
-              status: "starting",
-              turn: 0,
-              lastCommandSeq: 0,
-              lastEventSeq: 0,
-            },
-            events,
-          );
-        }
-      } else {
-        const events = await this.store.readLog<WorkerEvent>(id, "events");
-        state = reduceEvents(
-          {
-            version: 1,
-            id,
-            status: "starting",
-            turn: 0,
-            lastCommandSeq: 0,
-            lastEventSeq: 0,
-          },
-          events,
-        );
-      }
-
-      if (JSON.stringify(state) !== JSON.stringify(cached)) {
-        await this.store.writeState(state);
-      }
+      const meta = await this.store.readMeta(id);
+      let state = await this.store.reconcileState(id);
 
       const isStarting = state.status === "starting";
       const startupGraceActive =
@@ -158,7 +112,7 @@ export class Recovery {
         const authoritativeFailure = !session || !runnerAlive;
         const recentEvents = await this.store
           .readLogTail<WorkerEvent>(id, "events", 20)
-          .catch(() => newEvents);
+          .catch(() => []);
         const lastEvidence = [...recentEvents]
           .reverse()
           .find(
@@ -254,6 +208,11 @@ export class Recovery {
             });
             state = orphanedState;
             await publishOrphanedFailure(orphaned);
+            state = await this.store.resolveUnprocessedCommands(
+              id,
+              "Worker process terminated unexpectedly (orphaned)",
+              "orphaned",
+            );
           }
         } else if (
           authoritativeFailure &&
@@ -275,6 +234,11 @@ export class Recovery {
           });
           state = orphanedState;
           await publishOrphanedFailure(orphaned);
+          state = await this.store.resolveUnprocessedCommands(
+            id,
+            "Worker process terminated unexpectedly (orphaned)",
+            "orphaned",
+          );
         }
       }
 
@@ -283,9 +247,6 @@ export class Recovery {
         await this.reconcileTerminalProjections(id, state, meta);
       }
 
-      if (JSON.stringify(state) !== JSON.stringify(cached)) {
-        await this.store.writeState(state);
-      }
       return state;
     });
   }
@@ -365,6 +326,12 @@ export class Recovery {
           : typeof terminalEvent.data === "string"
             ? terminalEvent.data
             : "Worker failed.";
+
+    await this.store.resolveUnprocessedCommands(
+      id,
+      failureText,
+      terminalEvent.type,
+    );
 
     const existingCompletion = await this.store.readCompletion(id).catch(() => undefined);
     // Legacy runners could assign a result sequence independently of the
