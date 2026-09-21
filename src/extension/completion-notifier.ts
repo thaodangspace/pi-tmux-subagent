@@ -5,6 +5,8 @@ import type { WorkerCompletion } from "../protocol/types.js";
 
 export interface SubagentCompletionPayload {
   type: "subagent_completed";
+  /** Stable idempotency key for duplicate enqueue/redelivery handling. */
+  completionKey: string;
   id: string;
   turn: number;
   commandSeq?: number;
@@ -29,6 +31,7 @@ export function subagentCompletionPayload(
 ): SubagentCompletionPayload {
   return {
     type: "subagent_completed",
+    completionKey: `${completion.id}:${completion.turn}:${completion.resultSeq}:${completion.status}`,
     id: completion.id,
     turn: completion.turn,
     ...(completion.commandSeq !== undefined
@@ -141,8 +144,8 @@ export class CompletionNotifier {
           },
         );
 
-        // Acknowledge the durable completion only after the Pi session message
-        // has been accepted successfully.
+        // Pi exposes only synchronous enqueue, not durable delivery confirmation.
+        // Checkpoint after enqueue returns; detectable throws remain retryable.
         await this.manager.ackCompletion(
           this.consumer,
           this.options.ownerSessionKey,
@@ -150,7 +153,8 @@ export class CompletionNotifier {
         );
       }
     } catch (error) {
-      this.options.onError?.(error);
+      if (this.options.onError) this.options.onError(error);
+      else console.error("Completion notifier poll failed", error);
     }
   }
 }

@@ -5,8 +5,10 @@ import { CompletionNotifier } from "./completion-notifier.js";
 import { registerSubagentTool } from "./tool.js";
 import { ActivityWatcher } from "./watcher.js";
 
-export default function extension(pi: ExtensionAPI): void {
-  const manager = new Manager();
+export function registerExtension(
+  pi: ExtensionAPI,
+  manager = new Manager(),
+): void {
   let watcher: ActivityWatcher | undefined;
   let notifier: CompletionNotifier | undefined;
 
@@ -34,3 +36,5 @@ export default function extension(pi: ExtensionAPI): void {
     notifier = undefined;
   });
 }
+
+export default registerExtension;

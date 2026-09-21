@@ -63,6 +63,7 @@ describe("completion notifier", () => {
 
     expect(subagentCompletionPayload(completion)).toEqual({
       type: "subagent_completed",
+      completionKey: "agent-abc:1:1:completed",
       id: "agent-abc",
       turn: 1,
       commandSeq: 1,
@@ -97,6 +98,7 @@ describe("completion notifier", () => {
         display: true,
         details: {
           type: "subagent_completed",
+          completionKey: "worker-1:1:1:completed",
           id: "worker-1",
           turn: 1,
           commandSeq: 1,
@@ -138,6 +140,7 @@ describe("completion notifier", () => {
         display: true,
         details: {
           type: "subagent_completed",
+          completionKey: "worker-fail:2:2:failed",
           id: "worker-fail",
           turn: 2,
           commandSeq: 2,

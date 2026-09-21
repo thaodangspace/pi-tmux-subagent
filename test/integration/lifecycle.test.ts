@@ -483,6 +483,7 @@ describe("durable lifecycle", () => {
     expect(firstMsg.display).toBe(true);
     expect(firstMsg.details).toEqual({
       type: "subagent_completed",
+      completionKey: "notify1:1:7:completed",
       id,
       turn: 1,
       commandSeq: 1,
