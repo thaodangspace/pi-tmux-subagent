@@ -485,6 +485,8 @@ describe("durable lifecycle", () => {
       type: "subagent_completed",
       id,
       turn: 1,
+      commandSeq: 1,
+      resultSeq: 7,
       status: "completed",
       summary: "reply-1:task-completion-check",
       hasDetails: false,
@@ -492,7 +494,7 @@ describe("durable lifecycle", () => {
     expect(firstMsg.content).toContain("[subagent notify1 completed]");
     expect(firstMsg.content).toContain("reply-1:task-completion-check");
     expect(firstMsg.content).toContain(
-      'Full result available via subagent({ action: "result", id: "notify1" }).',
+      'Full result available via subagent({ action: "result", id: "notify1", turn: 1, resultSeq: 7 }).',
     );
 
     // Verify NO streaming events (message_update, token deltas) were sent into sendMessage

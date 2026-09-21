@@ -15,7 +15,7 @@ Commands:
   send <id> <text>              Send a follow-up prompt
   steer <id> <text>             Steer the active turn
   status <id>                   Show durable worker state
-  result <id>                   Show the latest final result
+  result <id> [turn resultSeq]  Show latest or an exact immutable result
   events <id> [fromSeq] [limit] Show bounded worker event history
   stop <id>                     Stop a worker
   delete <id>                   Delete a terminal worker and its stored data
@@ -63,7 +63,15 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       value = await manager.status(id);
     } else if (command === "result") {
       if (!id) throw new Error("result requires <id>");
-      value = await manager.getResult(id);
+      if (argv.length !== 2 && argv.length !== 4) {
+        throw new Error("result requires <id> or <id> <turn> <resultSeq>");
+      }
+      value = await manager.getResult(
+        id,
+        argv.length === 4
+          ? { turn: Number(argv[2]), resultSeq: Number(argv[3]) }
+          : undefined,
+      );
     } else if (command === "events") {
       if (!id) throw new Error("events requires <id>");
       const fromSeq = argv[2] !== undefined ? Number(argv[2]) : undefined;

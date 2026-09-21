@@ -80,6 +80,58 @@ describe("lazy full-result retrieval and correlation", () => {
     expect(fullResult.completedAt).toBe(result.completedAt);
   });
 
+  it("keeps immutable turn history and rejects correlation mismatches after restart", async () => {
+    const { root, store, id } = await setupWorker();
+    const base = {
+      version: 1 as const,
+      id,
+      completedAt: "2026-01-01T00:00:00Z",
+    };
+    await store.writeResult({
+      ...base,
+      status: "completed",
+      turn: 1,
+      commandSeq: 1,
+      resultSeq: 10,
+      eventSeq: 10,
+      text: "first turn",
+    });
+    await store.writeResult({
+      ...base,
+      status: "completed",
+      turn: 2,
+      commandSeq: 2,
+      resultSeq: 20,
+      eventSeq: 20,
+      text: "second turn",
+    });
+    await store.writeResult({
+      ...base,
+      status: "failed",
+      turn: 3,
+      commandSeq: 3,
+      resultSeq: 30,
+      eventSeq: 30,
+      text: "RPC failed",
+    });
+
+    const restarted = new Manager({ store: new ProtocolStore(root) });
+    expect((await restarted.getResult(id, { turn: 1, resultSeq: 10 })).text).toBe(
+      "first turn",
+    );
+    expect((await restarted.getResult(id, { turn: 2, resultSeq: 20 })).text).toBe(
+      "second turn",
+    );
+    await expect(
+      restarted.getResult(id, { turn: 1, resultSeq: 20 }),
+    ).rejects.toMatchObject({ code: "RESULT_CORRELATION_NOT_FOUND" });
+    expect(await restarted.getResult(id)).toMatchObject({
+      status: "failed",
+      turn: 3,
+      text: "RPC failed",
+    });
+  });
+
   it("throws clear error when worker does not exist", async () => {
     const root = await mkdtemp(join(tmpdir(), "pi-events-"));
     roots.push(root);

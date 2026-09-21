@@ -83,6 +83,8 @@ export interface WorkerState {
 export interface WorkerResult {
   version: 1;
   id: WorkerId;
+  /** Absent on legacy successful results. */
+  status?: "completed" | "failed";
   turn: number;
   commandSeq?: number;
   text: string;

@@ -7,6 +7,8 @@ export interface SubagentCompletionPayload {
   type: "subagent_completed";
   id: string;
   turn: number;
+  commandSeq?: number;
+  resultSeq: number;
   status: "completed" | "failed";
   summary: string;
   hasDetails: boolean;
@@ -18,7 +20,7 @@ export function formatCompletionNotification(
   return [
     `[subagent ${completion.id} ${completion.status}]`,
     completion.summary,
-    `Full result available via subagent({ action: "result", id: "${completion.id}" }).`,
+    `Full result available via subagent({ action: "result", id: "${completion.id}", turn: ${completion.turn}, resultSeq: ${completion.resultSeq} }).`,
   ].join("\n");
 }
 
@@ -29,6 +31,10 @@ export function subagentCompletionPayload(
     type: "subagent_completed",
     id: completion.id,
     turn: completion.turn,
+    ...(completion.commandSeq !== undefined
+      ? { commandSeq: completion.commandSeq }
+      : {}),
+    resultSeq: completion.resultSeq,
     status: completion.status,
     summary: completion.summary,
     hasDetails: completion.hasDetails,

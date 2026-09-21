@@ -142,6 +142,18 @@ export class Manager {
         lastEventAt: event.at,
       };
       await this.store.writeState(failed);
+      await this.store.writeResult({
+        version: 1,
+        id,
+        status: "failed",
+        turn: failed.turn,
+        commandSeq: 1,
+        resultSeq: event.seq,
+        eventSeq: event.seq,
+        text: error instanceof Error ? error.message : String(error),
+        completedAt: event.at,
+        workspace,
+      });
       await this.store.writeCompletion({
         version: 1,
         id,
@@ -152,7 +164,7 @@ export class Manager {
         summary: completionSummary(
           error instanceof Error ? error.message : String(error),
         ),
-        hasDetails: false,
+        hasDetails: true,
         completedAt: event.at,
       });
       throw error;
@@ -182,15 +194,21 @@ export class Manager {
       id,
     );
   }
-  async result(id: string): Promise<WorkerResult | undefined> {
-    const res = await this.store.readResult(workerId(id));
+  async result(
+    id: string,
+    correlation?: { turn: number; resultSeq: number },
+  ): Promise<WorkerResult | undefined> {
+    const res = await this.store.readResult(workerId(id), correlation);
     if (!res) return undefined;
     return {
       ...res,
       resultSeq: res.resultSeq ?? res.eventSeq,
     };
   }
-  async getResult(id: string): Promise<WorkerResult> {
+  async getResult(
+    id: string,
+    correlation?: { turn: number; resultSeq: number },
+  ): Promise<WorkerResult> {
     const value = workerId(id);
     try {
       await this.store.readMeta(value);
@@ -203,8 +221,14 @@ export class Manager {
       }
       throw error;
     }
-    const result = await this.result(value);
+    const result = await this.result(value, correlation);
     if (!result) {
+      if (correlation) {
+        throw new SubagentError(
+          "RESULT_CORRELATION_NOT_FOUND",
+          `No result for worker ${value} at turn ${correlation.turn}, resultSeq ${correlation.resultSeq}`,
+        );
+      }
       throw new SubagentError(
         "RESULT_NOT_FOUND",
         `No result available for worker: ${value}`,

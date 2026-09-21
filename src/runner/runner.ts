@@ -249,6 +249,7 @@ export class Runner {
       const result: WorkerResult = {
         version: 1,
         id: this.id,
+        status: "completed",
         turn: this.currentTurn,
         ...(this.activeCommandSeq !== undefined
           ? { commandSeq: this.activeCommandSeq }
@@ -281,6 +282,21 @@ export class Runner {
     const message = error instanceof Error ? error.message : String(error);
     await this.record({ type: "failed", data: message });
     const state = await this.store.readState(this.id);
+    const meta = await this.store.readMeta(this.id);
+    await this.store.writeResult({
+      version: 1,
+      id: this.id,
+      status: "failed",
+      turn: state.turn,
+      ...(this.activeCommandSeq !== undefined
+        ? { commandSeq: this.activeCommandSeq }
+        : {}),
+      resultSeq: state.lastEventSeq,
+      eventSeq: state.lastEventSeq,
+      text: message || "Worker failed.",
+      completedAt: state.lastEventAt ?? new Date().toISOString(),
+      ...(meta.workspace ? { workspace: meta.workspace } : {}),
+    });
     await this.store.writeCompletion({
       version: 1,
       id: this.id,
@@ -291,7 +307,7 @@ export class Runner {
       resultSeq: state.lastEventSeq,
       status: "failed",
       summary: completionSummary(message || "Worker failed."),
-      hasDetails: false,
+      hasDetails: true,
       completedAt: state.lastEventAt ?? new Date().toISOString(),
     });
     this.stopped = true;

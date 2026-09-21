@@ -58,13 +58,15 @@ describe("completion notifier", () => {
     );
 
     expect(formatCompletionNotification(completion)).toBe(
-      `[subagent agent-abc completed]\nImplemented feature X with 5 tests.\nFull result available via subagent({ action: "result", id: "agent-abc" }).`,
+      `[subagent agent-abc completed]\nImplemented feature X with 5 tests.\nFull result available via subagent({ action: "result", id: "agent-abc", turn: 1, resultSeq: 1 }).`,
     );
 
     expect(subagentCompletionPayload(completion)).toEqual({
       type: "subagent_completed",
       id: "agent-abc",
       turn: 1,
+      commandSeq: 1,
+      resultSeq: 1,
       status: "completed",
       summary: "Implemented feature X with 5 tests.",
       hasDetails: true,
@@ -97,6 +99,8 @@ describe("completion notifier", () => {
           type: "subagent_completed",
           id: "worker-1",
           turn: 1,
+          commandSeq: 1,
+          resultSeq: 1,
           status: "completed",
           summary: "Done task 1",
           hasDetails: true,
@@ -136,6 +140,8 @@ describe("completion notifier", () => {
           type: "subagent_completed",
           id: "worker-fail",
           turn: 2,
+          commandSeq: 2,
+          resultSeq: 2,
           status: "failed",
           summary: "Process exited with code 1",
           hasDetails: true,

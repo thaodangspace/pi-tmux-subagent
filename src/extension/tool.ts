@@ -26,6 +26,8 @@ const subagentSchema = Type.Object({
   thinking: Type.Optional(Type.String()),
   workspace: Type.Optional(StringEnum(["current", "worktree"] as const)),
   mode: Type.Optional(StringEnum(["full"] as const)),
+  turn: Type.Optional(Type.Integer({ minimum: 0 })),
+  resultSeq: Type.Optional(Type.Integer({ minimum: 0 })),
   fromSeq: Type.Optional(Type.Integer({ minimum: 1 })),
   limit: Type.Optional(Type.Integer({ minimum: 1 })),
 });
@@ -50,6 +52,8 @@ export interface SubagentInput {
   thinking?: string;
   workspace?: "current" | "worktree";
   mode?: "full";
+  turn?: number;
+  resultSeq?: number;
   fromSeq?: number;
   limit?: number;
 }
@@ -112,8 +116,17 @@ export function registerSubagentTool(
         };
       else if (input.action === "status")
         value = await manager.recover(requireValue(input.id, "id"));
-      else if (input.action === "result")
-        value = await manager.getResult(requireValue(input.id, "id"));
+      else if (input.action === "result") {
+        if ((input.turn === undefined) !== (input.resultSeq === undefined)) {
+          throw new Error("result requires both turn and resultSeq when either is supplied");
+        }
+        value = await manager.getResult(
+          requireValue(input.id, "id"),
+          input.turn !== undefined && input.resultSeq !== undefined
+            ? { turn: input.turn, resultSeq: input.resultSeq }
+            : undefined,
+        );
+      }
       else if (input.action === "events")
         value = await manager.events(requireValue(input.id, "id"), {
           ...(input.fromSeq !== undefined ? { fromSeq: input.fromSeq } : {}),

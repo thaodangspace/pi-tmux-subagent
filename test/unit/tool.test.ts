@@ -41,6 +41,8 @@ describe("subagent tool registration and execution", () => {
     expect(tool.parameters.properties.action.enum).toContain("result");
     expect(tool.parameters.properties.action.enum).toContain("events");
     expect(tool.parameters.properties.mode).toBeDefined();
+    expect(tool.parameters.properties.turn).toBeDefined();
+    expect(tool.parameters.properties.resultSeq).toBeDefined();
     expect(tool.parameters.properties.fromSeq).toBeDefined();
     expect(tool.parameters.properties.limit).toBeDefined();
   });
@@ -80,7 +82,7 @@ describe("subagent tool registration and execution", () => {
 
     const res = await tool.execute(
       "call1",
-      { action: "result", id: "worker1" },
+      { action: "result", id: "worker1", turn: 1, resultSeq: 5 },
       undefined,
       undefined,
       { cwd: "/tmp" },
@@ -95,6 +97,16 @@ describe("subagent tool registration and execution", () => {
       text: "Full detailed output of inspection",
     });
     expect(res.details).toEqual(parsed);
+
+    await expect(
+      tool.execute(
+        "call-mismatch",
+        { action: "result", id: "worker1", turn: 1, resultSeq: 6 },
+        undefined,
+        undefined,
+        { cwd: "/tmp" },
+      ),
+    ).rejects.toMatchObject({ code: "RESULT_CORRELATION_NOT_FOUND" });
   });
 
   it("fetches bounded event history on action: 'events'", async () => {

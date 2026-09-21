@@ -156,6 +156,31 @@ export class ProtocolStore {
     await atomicJson(this.path(value.id, "state.json"), value);
   }
   async writeResult(value: WorkerResult): Promise<void> {
+    const resultSeq = value.resultSeq ?? value.eventSeq;
+    const historyDir = this.path(value.id, "results");
+    const historyPath = join(historyDir, `${value.turn}-${resultSeq}.json`);
+    await mkdir(historyDir, { recursive: true, mode: 0o700 });
+    try {
+      await writeFile(historyPath, `${JSON.stringify(value, null, 2)}\n`, {
+        encoding: "utf8",
+        flag: "wx",
+        mode: 0o600,
+      });
+    } catch (error: any) {
+      if (error.code !== "EEXIST") throw error;
+      const existing = await this.readJson<WorkerResult>(
+        value.id,
+        `results/${value.turn}-${resultSeq}.json`,
+      );
+      if (JSON.stringify(existing) !== JSON.stringify(value)) {
+        throw new SubagentError(
+          "RESULT_CORRELATION_CONFLICT",
+          `Result ${value.id} turn ${value.turn} sequence ${resultSeq} already exists with different content`,
+        );
+      }
+    }
+    // Backward-compatible latest-result cache; immutable history above is
+    // authoritative and is always persisted first.
     await atomicJson(this.path(value.id, "result.json"), value);
   }
   async writeCompletion(
@@ -341,9 +366,40 @@ export class ProtocolStore {
   async readState(id: WorkerId | string): Promise<WorkerState> {
     return this.readJson(id, "state.json");
   }
-  async readResult(id: WorkerId | string): Promise<WorkerResult | undefined> {
+  async readResult(
+    id: WorkerId | string,
+    correlation?: { turn: number; resultSeq: number },
+  ): Promise<WorkerResult | undefined> {
+    if (correlation) {
+      const { turn, resultSeq } = correlation;
+      if (
+        !Number.isSafeInteger(turn) ||
+        turn < 0 ||
+        !Number.isSafeInteger(resultSeq) ||
+        resultSeq < 0
+      ) {
+        throw new SubagentError(
+          "INVALID_RESULT_CORRELATION",
+          "Result turn and resultSeq must be non-negative integers",
+        );
+      }
+      try {
+        return await this.readJson(
+          id,
+          `results/${turn}-${resultSeq}.json`,
+        );
+      } catch (error: any) {
+        if (error.code !== "ENOENT") throw error;
+      }
+    }
     try {
-      return await this.readJson(id, "result.json");
+      const latest = await this.readJson<WorkerResult>(id, "result.json");
+      if (!correlation) return latest;
+      const latestSeq = latest.resultSeq ?? latest.eventSeq;
+      return latest.turn === correlation.turn &&
+        latestSeq === correlation.resultSeq
+        ? latest
+        : undefined;
     } catch (error: any) {
       if (error.code === "ENOENT") return undefined;
       throw error;
