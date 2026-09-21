@@ -63,10 +63,18 @@ export async function openSubagentsControl(
       state.status === "completed" ||
       state.status === "failed" ||
       state.status === "stopped" ||
+      state.status === "killed" ||
       state.status === "orphaned";
     const actions = terminal
       ? ["Inspect / attach", "Delete", "Close"]
-      : ["Send follow-up", "Steer", "Stop", "Inspect / attach", "Close"];
+      : [
+          "Send follow-up",
+          "Steer",
+          "Stop",
+          "Force kill",
+          "Inspect / attach",
+          "Close",
+        ];
     const action = await ctx.ui.select(detail, actions);
     if (action === "Send follow-up" || action === "Steer") {
       const message = await ctx.ui.input(action, "Instruction for the worker");
@@ -83,6 +91,16 @@ export async function openSubagentsControl(
       ) {
         await manager.stop(selected.id);
         ctx.ui.notify(`Stop queued for ${selected.id}`, "warning");
+      }
+    } else if (action === "Force kill") {
+      if (
+        await ctx.ui.confirm(
+          "Force-terminate subagent?",
+          `Kill the tmux worker and RPC process for ${selected.id}?`,
+        )
+      ) {
+        await manager.forceTerminate(selected.id);
+        ctx.ui.notify(`Force-terminated ${selected.id}`, "warning");
       }
     } else if (action === "Inspect / attach") {
       ctx.ui.notify(await inspectWorker(manager, selected.id), "info");

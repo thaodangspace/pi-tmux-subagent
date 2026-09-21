@@ -39,6 +39,90 @@ describe("manager command delivery", () => {
     ]);
   });
 
+  it("force-terminates hung workers durably and idempotently", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-sa-"));
+    roots.push(root);
+    const store = new ProtocolStore(root);
+    const id = "hung-worker" as any;
+    await store.create(
+      {
+        version: 1,
+        id,
+        tmuxSession: "pi-sa-hung-worker",
+        createdAt: "2026-01-01T00:00:00Z",
+        cwd: root,
+        launch: { task: "hang" },
+      },
+      {
+        version: 1,
+        id,
+        status: "running",
+        turn: 1,
+        lastCommandSeq: 1,
+        lastEventSeq: 0,
+      },
+    );
+    const terminate = vi.fn(async () => {});
+    const manager = new Manager({ store, tmux: { terminate } as any });
+
+    expect(await manager.forceTerminate(id)).toMatchObject({ status: "killed" });
+    expect(await manager.forceTerminate(id)).toMatchObject({ status: "killed" });
+    expect(terminate).toHaveBeenCalledTimes(2);
+    const events = await store.readLog<any>(id, "events");
+    expect(events.filter((event) => event.type === "killed")).toHaveLength(1);
+  });
+
+  it("cleans managed worktrees before delete and preserves dirty metadata", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-sa-"));
+    roots.push(root);
+    const store = new ProtocolStore(root);
+    const id = "worktree-worker" as any;
+    const workspace = {
+      mode: "worktree" as const,
+      root,
+      branch: "pi-sa/worktree-worker",
+      worktree: join(root, ".pi/worktrees/worktree-worker"),
+    };
+    await store.create(
+      {
+        version: 1,
+        id,
+        tmuxSession: "pi-sa-worktree-worker",
+        createdAt: "2026-01-01T00:00:00Z",
+        cwd: workspace.worktree,
+        launch: { task: "done", workspace: "worktree" },
+        workspace,
+      },
+      {
+        version: 1,
+        id,
+        status: "stopped",
+        turn: 1,
+        lastCommandSeq: 2,
+        lastEventSeq: 2,
+      },
+    );
+    const cleanup = vi.fn(async (workspaceValue: unknown): Promise<void> => {
+      void workspaceValue;
+      throw Object.assign(new Error("Refusing to remove a dirty worktree"), {
+        code: "DIRTY_WORKTREE",
+      });
+    });
+    const manager = new Manager({
+      store,
+      tmux: { exists: vi.fn(async () => false), terminate: vi.fn(async () => {}) } as any,
+      worktree: { cleanup } as any,
+    });
+
+    await expect(manager.delete(id)).rejects.toMatchObject({ code: "DIRTY_WORKTREE" });
+    expect(await store.readMeta(id)).toMatchObject({ workspace });
+    expect(cleanup).toHaveBeenCalledWith(workspace);
+
+    cleanup.mockResolvedValueOnce(undefined);
+    await manager.delete(id);
+    await expect(store.readMeta(id)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("enforces recursive spawning depth limit", async () => {
     const root = await mkdtemp(join(tmpdir(), "pi-sa-"));
     roots.push(root);

@@ -17,7 +17,8 @@ Commands:
   status <id>                   Show durable worker state
   result <id> [turn resultSeq]  Show latest or an exact immutable result
   events <id> [fromSeq] [limit] Show bounded worker event history
-  stop <id>                     Stop a worker
+  stop <id>                     Request graceful worker shutdown
+  kill <id>                     Force-terminate a hung worker
   delete <id>                   Delete a terminal worker and its stored data
   list                          List durable workers
   attach <id>                   Attach to the worker tmux session
@@ -54,6 +55,9 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     } else if (command === "stop") {
       if (!id) throw new Error("stop requires <id>");
       value = { id, seq: await manager.stop(id) };
+    } else if (command === "kill") {
+      if (!id) throw new Error("kill requires <id>");
+      value = await manager.forceTerminate(id);
     } else if (command === "delete") {
       if (!id) throw new Error("delete requires <id>");
       await manager.delete(id);

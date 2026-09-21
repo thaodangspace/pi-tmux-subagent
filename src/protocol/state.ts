@@ -17,6 +17,7 @@ export function reduceEvents(
         next.turn += 1;
       } else if (event.type === "agent_settled") next.status = "waiting";
       else if (event.type === "stopped") next.status = "stopped";
+      else if (event.type === "killed") next.status = "killed";
       else if (event.type === "orphaned") next.status = "orphaned";
       else if (event.type === "failed" || event.type === "rpc_exit") {
         next.status = "failed";

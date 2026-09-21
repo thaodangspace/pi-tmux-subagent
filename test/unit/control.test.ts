@@ -26,6 +26,7 @@ function setup(action: string, message = "do it") {
     send: vi.fn(async () => 2),
     steer: vi.fn(async () => 2),
     stop: vi.fn(async () => 2),
+    forceTerminate: vi.fn(async () => ({ ...state, status: "killed" as const })),
     delete: vi.fn(async () => undefined),
     store: {
       readMeta: vi.fn(async () => meta),
@@ -64,6 +65,12 @@ describe("subagent controls", () => {
     await openSubagentsControl(manager as any, ctx as any);
     expect(ctx.ui.confirm).toHaveBeenCalled();
     expect(manager.stop).toHaveBeenCalledWith("worker-1");
+  });
+  it("requires confirmation and force-terminates a hung worker", async () => {
+    const { manager, ctx } = setup("Force kill");
+    await openSubagentsControl(manager as any, ctx as any);
+    expect(ctx.ui.confirm).toHaveBeenCalled();
+    expect(manager.forceTerminate).toHaveBeenCalledWith("worker-1");
   });
   it("requires confirmation and deletes stored worker data", async () => {
     const { manager, ctx } = setup("Delete");

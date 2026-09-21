@@ -44,7 +44,7 @@ Output is JSON. Set `PI_TMUX_REGISTRY` to override the default `~/.pi/tmux-subag
 
 ## Pi extension
 
-The `subagent` tool supports `spawn`, `send`, `steer`, `status`, `result`, `events`, `stop`, `delete`, and `list`. Deletion is limited to terminal workers and permanently removes their registry directory. Human commands are:
+The `subagent` tool supports `spawn`, `send`, `steer`, `status`, `result`, `events`, `stop`, `kill`, `delete`, and `list`. `stop` is a cooperative durable command; `kill` force-terminates the tagged tmux pane/session and its runner/RPC process tree, records terminal `killed` state, and is safe to repeat when tmux is already gone. Deletion is limited to terminal workers and permanently removes their registry directory. Human commands are:
 
 - `/subagents` — open the complete worker selector to send, steer, stop, inspect, or delete a terminal worker
 - `/subagent-inspect <id>` — show bounded durable activity, result, and worktree metadata
@@ -142,7 +142,7 @@ Turn correlation is frozen at `agent_start`: the next accepted `prompt`/`send` c
 
 ## Worktrees
 
-`workspace: worktree` creates `.pi/worktrees/<worker-id>` on branch `pi-sa/<worker-id>`. Results report worktree, branch, commit, and changed files. The package never merges, cherry-picks, or force-removes dirty work. Users retain integration and cleanup control.
+`workspace: worktree` creates `.pi/worktrees/<worker-id>` on branch `pi-sa/<worker-id>`. Results report worktree, branch, commit, and changed files. The package never merges, cherry-picks, or force-removes dirty work. Deleting a terminal worktree worker first cleans a clean managed worktree. Dirty cleanup is refused before registry deletion, preserving both user changes and the metadata pointer needed for manual recovery. Users retain integration control.
 
 ## Tests
 

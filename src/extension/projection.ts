@@ -178,7 +178,9 @@ export function projectWorker(
       : {
           latestActivity: statusActivity(state),
           latestActivityKind:
-            state.status === "failed" || state.status === "orphaned"
+            state.status === "failed" ||
+            state.status === "killed" ||
+            state.status === "orphaned"
               ? "error"
               : "state",
         }),
@@ -200,6 +202,8 @@ function statusActivity(state: WorkerState): string {
       return "worker failed";
     case "stopped":
       return "stopped";
+    case "killed":
+      return "force-terminated";
     case "orphaned":
       return "worker orphaned";
   }

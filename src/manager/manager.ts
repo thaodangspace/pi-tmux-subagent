@@ -345,6 +345,7 @@ export class Manager {
       state.status !== "completed" &&
       state.status !== "failed" &&
       state.status !== "stopped" &&
+      state.status !== "killed" &&
       state.status !== "orphaned"
     ) {
       throw new SubagentError(
@@ -352,14 +353,38 @@ export class Manager {
         `Cannot delete active worker ${value} (${state.status}); stop it first`,
       );
     }
+    const meta = await this.store.readMeta(value);
+    if (meta.workspace?.mode === "worktree") {
+      // Cleanup runs before registry deletion. DIRTY_WORKTREE leaves metadata
+      // intact so the user never loses the recovery pointer.
+      await this.worktree.cleanup(meta.workspace);
+    }
     await this.tmux.terminate(value).catch(() => undefined);
     await this.store.delete(value);
   }
   attach(id: string): Promise<void> {
     return this.tmux.attach(workerId(id));
   }
-  async forceTerminate(id: string): Promise<void> {
-    await this.tmux.terminate(workerId(id));
+  async forceTerminate(id: string): Promise<WorkerState> {
+    const value = workerId(id);
+    await this.store.readMeta(value);
+    // tmux termination kills the tagged pane or standalone session and its
+    // supervised runner/RPC process tree. The adapter treats absence as safe.
+    await this.tmux.terminate(value);
+    const current = await this.store.readState(value);
+    if (current.status === "killed") return current;
+    const event = await this.store.appendEvent(value, {
+      type: "killed",
+      data: "Force-terminated by supervisor",
+    });
+    const killed = {
+      ...current,
+      status: "killed" as const,
+      lastEventSeq: event.seq,
+      lastEventAt: event.at,
+    };
+    await this.store.writeState(killed);
+    return killed;
   }
 }
 export type { WorkerId };

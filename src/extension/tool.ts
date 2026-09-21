@@ -13,6 +13,7 @@ const subagentSchema = Type.Object({
     "result",
     "events",
     "stop",
+    "kill",
     "delete",
     "list",
   ] as const),
@@ -40,6 +41,7 @@ export interface SubagentInput {
     | "result"
     | "events"
     | "stop"
+    | "kill"
     | "delete"
     | "list";
   id?: string;
@@ -137,6 +139,8 @@ export function registerSubagentTool(
           id: input.id,
           seq: await manager.stop(requireValue(input.id, "id")),
         };
+      else if (input.action === "kill")
+        value = await manager.forceTerminate(requireValue(input.id, "id"));
       else if (input.action === "delete") {
         const id = requireValue(input.id, "id");
         await manager.delete(id);

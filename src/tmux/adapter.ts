@@ -219,7 +219,10 @@ export class TmuxAdapter {
     const pane = await this.paneTarget(id);
     if (pane) {
       const result = await this.exec("tmux", ["kill-pane", "-t", pane]);
-      if (result.code !== 0)
+      if (
+        result.code !== 0 &&
+        !/can't find (pane|session)/i.test(result.stderr)
+      )
         throw new SubagentError("TMUX_TERMINATE_FAILED", result.stderr.trim());
       return;
     }

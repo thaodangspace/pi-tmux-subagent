@@ -11,6 +11,7 @@ export const TERMINAL_WORKER_STATUSES = new Set([
   "completed",
   "failed",
   "stopped",
+  "killed",
   "orphaned",
 ]);
 function alive(pid?: number): boolean {
