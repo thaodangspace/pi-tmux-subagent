@@ -5,7 +5,14 @@ import { ProtocolStore } from "../protocol/store.js";
 import { TmuxAdapter } from "../tmux/adapter.js";
 import { workerId } from "../types.js";
 
-const TERMINAL = new Set(["completed", "failed", "stopped", "orphaned"]);
+// `completed` is accepted only for registries written by pre-persistent-worker
+// versions. Current runners settle turns back to `waiting` and never emit it.
+export const TERMINAL_WORKER_STATUSES = new Set([
+  "completed",
+  "failed",
+  "stopped",
+  "orphaned",
+]);
 function alive(pid?: number): boolean {
   if (!pid) return false;
   try {
@@ -84,7 +91,7 @@ export class Recovery {
           Date.now() - Date.parse(meta.createdAt) <= this.startupGraceMs
         : false;
 
-    if (!TERMINAL.has(state.status) && !startupGraceActive) {
+    if (!TERMINAL_WORKER_STATUSES.has(state.status) && !startupGraceActive) {
       const fresh = meta.heartbeatAt
         ? Date.now() - Date.parse(meta.heartbeatAt) <= this.staleMs
         : false;

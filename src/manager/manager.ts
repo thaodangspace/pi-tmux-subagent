@@ -340,6 +340,8 @@ export class Manager {
     const value = workerId(id);
     const state = await this.status(value);
     if (
+      // `completed` is a legacy terminal snapshot. Persistent workers now
+      // return to `waiting` whenever a turn settles.
       state.status !== "completed" &&
       state.status !== "failed" &&
       state.status !== "stopped" &&

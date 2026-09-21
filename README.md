@@ -99,6 +99,19 @@ The same file may be placed globally at `~/.pi/agent/sub-agents.json`. A project
 
 ## Durability and recovery
 
+Worker lifetime and turn delivery are separate state machines. A settled turn does not terminate its worker:
+
+```text
+worker: starting -> waiting <-> running
+                          \\-> stopped | failed | orphaned
+
+turn: queued -> accepted -> running -> settled
+      -> immutable result persisted -> compact completion published
+      -> owning parent enqueue checkpointed
+```
+
+`completed` may still appear as a legacy terminal worker status in registries created by older releases. New runners never produce it; they emit a `completed` turn completion while returning the worker to `waiting`. This compatibility state remains delete-eligible, but completion publication never implies RPC or tmux termination.
+
 Each worker uses:
 
 ```text

@@ -5,6 +5,7 @@ export type WorkerStatus =
   | "starting"
   | "running"
   | "waiting"
+  /** @deprecated Legacy terminal worker snapshot; new runners never emit it. */
   | "completed"
   | "failed"
   | "stopped"
