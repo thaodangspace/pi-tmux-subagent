@@ -119,58 +119,67 @@ export class Manager {
       lastCommandSeq: 0,
       lastEventSeq: 0,
     };
-    await this.store.create(meta, state);
-    await this.store.appendCommand(id, { type: "prompt", text: config.task });
+    let registered = false;
     try {
-      const childEnv: Record<string, string> = {
-        PI_TMUX_DEPTH: String(depth + 1),
-        PI_TMUX_MAX_DEPTH: String(maxDepth),
-      };
-      await this.tmux.create(
-        id,
-        this.store.dir(id),
-        this.runnerFile,
-        process.execPath,
-        workerCwd,
-        childEnv,
-      );
+      await this.store.create(meta, state);
+      registered = true;
+      await this.store.appendCommand(id, { type: "prompt", text: config.task });
+      try {
+        const childEnv: Record<string, string> = {
+          PI_TMUX_DEPTH: String(depth + 1),
+          PI_TMUX_MAX_DEPTH: String(maxDepth),
+        };
+        await this.tmux.create(
+          id,
+          this.store.dir(id),
+          this.runnerFile,
+          process.execPath,
+          workerCwd,
+          childEnv,
+        );
+      } catch (error) {
+        const event = await this.store.appendEvent(id, {
+          type: "failed",
+          data: error instanceof Error ? error.message : error,
+        });
+        const failed = {
+          ...state,
+          status: "failed" as const,
+          lastEventSeq: event.seq,
+          lastEventAt: event.at,
+        };
+        await this.store.writeState(failed);
+        await this.store.writeResult({
+          version: 1,
+          id,
+          status: "failed",
+          turn: failed.turn,
+          commandSeq: 1,
+          resultSeq: event.seq,
+          eventSeq: event.seq,
+          text: error instanceof Error ? error.message : String(error),
+          completedAt: event.at,
+          workspace,
+        });
+        await this.store.writeCompletion({
+          version: 1,
+          id,
+          turn: failed.turn,
+          commandSeq: 1,
+          resultSeq: event.seq,
+          status: "failed",
+          summary: completionSummary(
+            error instanceof Error ? error.message : String(error),
+          ),
+          hasDetails: true,
+          completedAt: event.at,
+        });
+        throw error;
+      }
     } catch (error) {
-      const event = await this.store.appendEvent(id, {
-        type: "failed",
-        data: error instanceof Error ? error.message : error,
-      });
-      const failed = {
-        ...state,
-        status: "failed" as const,
-        lastEventSeq: event.seq,
-        lastEventAt: event.at,
-      };
-      await this.store.writeState(failed);
-      await this.store.writeResult({
-        version: 1,
-        id,
-        status: "failed",
-        turn: failed.turn,
-        commandSeq: 1,
-        resultSeq: event.seq,
-        eventSeq: event.seq,
-        text: error instanceof Error ? error.message : String(error),
-        completedAt: event.at,
-        workspace,
-      });
-      await this.store.writeCompletion({
-        version: 1,
-        id,
-        turn: failed.turn,
-        commandSeq: 1,
-        resultSeq: event.seq,
-        status: "failed",
-        summary: completionSummary(
-          error instanceof Error ? error.message : String(error),
-        ),
-        hasDetails: true,
-        completedAt: event.at,
-      });
+      if (!registered && workspace.mode === "worktree") {
+        await this.worktree.cleanup(workspace).catch(() => undefined);
+      }
       throw error;
     }
     return state;
@@ -371,7 +380,7 @@ export class Manager {
   }
   async forceTerminate(id: string): Promise<WorkerState> {
     const value = workerId(id);
-    await this.store.readMeta(value);
+    const meta = await this.store.readMeta(value).catch(() => undefined);
     // tmux termination kills the tagged pane or standalone session and its
     // supervised runner/RPC process tree. The adapter treats absence as safe.
     await this.tmux.terminate(value);
@@ -388,6 +397,28 @@ export class Manager {
       lastEventAt: event.at,
     };
     await this.store.writeState(killed);
+    const result: WorkerResult = {
+      version: 1,
+      id: value,
+      status: "failed",
+      turn: killed.turn,
+      resultSeq: event.seq,
+      eventSeq: event.seq,
+      text: "Force-terminated by supervisor",
+      completedAt: event.at,
+      ...(meta?.workspace ? { workspace: meta.workspace } : {}),
+    };
+    await this.store.writeResult(result);
+    await this.store.writeCompletion({
+      version: 1,
+      id: value,
+      turn: killed.turn,
+      resultSeq: event.seq,
+      status: "failed",
+      summary: completionSummary("Force-terminated by supervisor"),
+      hasDetails: true,
+      completedAt: event.at,
+    });
     return killed;
   }
 }

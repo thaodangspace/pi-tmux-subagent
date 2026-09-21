@@ -101,6 +101,10 @@ export function eventActivity(
     return { at: event.at, kind: "state", text: "completed" };
   if (event.type === "stopped")
     return { at: event.at, kind: "state", text: "stopped" };
+  if (event.type === "unresponsive")
+    return { at: event.at, kind: "error", text: "worker unresponsive" };
+  if (event.type === "responsive")
+    return { at: event.at, kind: "state", text: "worker responsive" };
   if (event.type === "killed")
     return { at: event.at, kind: "error", text: "force-terminated" };
   return undefined;
@@ -212,5 +216,7 @@ function statusActivity(state: WorkerState): string {
       return "force-terminated";
     case "orphaned":
       return "worker orphaned";
+    case "unresponsive":
+      return "worker unresponsive";
   }
 }

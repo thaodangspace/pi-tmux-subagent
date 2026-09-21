@@ -1,6 +1,11 @@
 import { readdir } from "node:fs/promises";
+import { completionSummary } from "../protocol/completion.js";
 import { reduceEvents } from "../protocol/state.js";
-import type { WorkerEvent, WorkerState } from "../protocol/types.js";
+import type {
+  WorkerEvent,
+  WorkerResult,
+  WorkerState,
+} from "../protocol/types.js";
 import { ProtocolStore } from "../protocol/store.js";
 import { TmuxAdapter } from "../tmux/adapter.js";
 import { workerId } from "../types.js";
@@ -73,22 +78,49 @@ export class Recovery {
 
   async recover(value: string): Promise<WorkerState> {
     const id = workerId(value);
-    const [meta, cached, events] = await Promise.all([
+    const [meta, cached] = await Promise.all([
       this.store.readMeta(id),
-      this.store.readState(id),
-      this.store.readLog<WorkerEvent>(id, "events"),
+      this.store.readState(id).catch(() => undefined),
     ]);
-    let state = reduceEvents(
-      {
-        version: 1,
-        id,
-        status: "starting",
-        turn: 0,
-        lastCommandSeq: 0,
-        lastEventSeq: 0,
-      },
-      events,
-    );
+
+    let state: WorkerState;
+    let newEvents: WorkerEvent[] = [];
+    if (cached && cached.lastEventSeq > 0) {
+      try {
+        newEvents = await this.store.readLog<WorkerEvent>(
+          id,
+          "events",
+          cached.lastEventSeq + 1,
+        );
+        state = reduceEvents(cached, newEvents);
+      } catch {
+        const events = await this.store.readLog<WorkerEvent>(id, "events");
+        state = reduceEvents(
+          {
+            version: 1,
+            id,
+            status: "starting",
+            turn: 0,
+            lastCommandSeq: 0,
+            lastEventSeq: 0,
+          },
+          events,
+        );
+      }
+    } else {
+      const events = await this.store.readLog<WorkerEvent>(id, "events");
+      state = reduceEvents(
+        {
+          version: 1,
+          id,
+          status: "starting",
+          turn: 0,
+          lastCommandSeq: 0,
+          lastEventSeq: 0,
+        },
+        events,
+      );
+    }
 
     const isStarting = state.status === "starting";
     const startupGraceActive =
@@ -118,7 +150,10 @@ export class Recovery {
       // Tagged tmux ownership plus the runner PID are authoritative. Heartbeat
       // and child-Pi probes are advisory while both supervisor signals agree.
       const authoritativeFailure = !session || !runnerAlive;
-      const lastEvidence = [...events]
+      const recentEvents = await this.store
+        .readLogTail<WorkerEvent>(id, "events", 20)
+        .catch(() => newEvents);
+      const lastEvidence = [...recentEvents]
         .reverse()
         .find(
           (event) =>
@@ -128,6 +163,34 @@ export class Recovery {
         );
       const suspect =
         lastEvidence?.type === "liveness_suspected" ? lastEvidence : undefined;
+
+      const publishOrphanedFailure = async (orphanedEvent: WorkerEvent) => {
+        const failureText = "Worker process terminated unexpectedly (orphaned)";
+        const result: WorkerResult = {
+          version: 1,
+          id,
+          status: "failed",
+          turn: state.turn,
+          ...(state.lastCommandSeq ? { commandSeq: state.lastCommandSeq } : {}),
+          resultSeq: orphanedEvent.seq,
+          eventSeq: orphanedEvent.seq,
+          text: failureText,
+          completedAt: state.lastEventAt ?? new Date().toISOString(),
+          ...(meta.workspace ? { workspace: meta.workspace } : {}),
+        };
+        await this.store.writeResult(result);
+        await this.store.writeCompletion({
+          version: 1,
+          id,
+          turn: state.turn,
+          ...(state.lastCommandSeq ? { commandSeq: state.lastCommandSeq } : {}),
+          resultSeq: orphanedEvent.seq,
+          status: "failed",
+          summary: completionSummary(failureText),
+          hasDetails: true,
+          completedAt: state.lastEventAt ?? new Date().toISOString(),
+        });
+      };
 
       if (!authoritativeFailure && suspect) {
         const event = await this.store.appendEvent(id, {
@@ -147,6 +210,7 @@ export class Recovery {
             data: event.data,
           });
           state = reduceEvents(state, [orphaned]);
+          await publishOrphanedFailure(orphaned);
         }
       } else if (
         authoritativeFailure &&
@@ -158,6 +222,7 @@ export class Recovery {
           data: { session, heartbeatFresh: fresh, runnerAlive, piAlive },
         });
         state = reduceEvents(state, [event]);
+        await publishOrphanedFailure(event);
       }
     }
     if (JSON.stringify(state) !== JSON.stringify(cached))

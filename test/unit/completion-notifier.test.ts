@@ -108,7 +108,7 @@ describe("completion notifier", () => {
           hasDetails: true,
         },
       },
-      { deliverAs: "followUp" },
+      { deliverAs: "followUp", triggerTurn: true },
     );
 
     // Verify cursor is acked: polling again sends nothing
@@ -150,7 +150,7 @@ describe("completion notifier", () => {
           hasDetails: true,
         },
       },
-      { deliverAs: "followUp" },
+      { deliverAs: "followUp", triggerTurn: true },
     );
   });
 

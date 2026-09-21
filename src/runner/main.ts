@@ -10,9 +10,13 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const rpcArgs = process.env.PI_TMUX_RPC_ARGS
     ? (JSON.parse(process.env.PI_TMUX_RPC_ARGS) as string[])
     : undefined;
+  const unresponsiveMs = process.env.PI_TMUX_UNRESPONSIVE_MS
+    ? Number.parseInt(process.env.PI_TMUX_UNRESPONSIVE_MS, 10)
+    : undefined;
   await new Runner(runDir, {
     ...(rpcCommand ? { rpcCommand } : {}),
     ...(rpcArgs ? { rpcArgs } : {}),
+    ...(unresponsiveMs !== undefined ? { unresponsiveMs } : {}),
   }).run();
 }
 

@@ -22,6 +22,8 @@ export function reduceEvents(
       else if (event.type === "stopped") next.status = "stopped";
       else if (event.type === "killed") next.status = "killed";
       else if (event.type === "orphaned") next.status = "orphaned";
+      else if (event.type === "unresponsive") next.status = "unresponsive";
+      else if (event.type === "responsive") next.status = "running";
       else if (event.type === "failed" || event.type === "rpc_exit") {
         next.status = "failed";
         next.error =

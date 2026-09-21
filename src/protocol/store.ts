@@ -132,6 +132,7 @@ export class ProtocolStore {
     return join(this.dir(id), name);
   }
   async create(meta: WorkerMeta, state: WorkerState): Promise<void> {
+    await mkdir(this.root, { recursive: true, mode: 0o700 });
     const dir = this.dir(meta.id);
     try {
       await mkdir(dir, { recursive: false, mode: 0o700 });
@@ -193,15 +194,55 @@ export class ProtocolStore {
     await this.acquire(lock);
     try {
       const feedPath = join(this.root, "completions.jsonl");
-      const lastCursor = await getLastSeqAndRepair(feedPath);
-      const entries = await this.readCompletionFeed();
-      const existing = entries.find(
-        ({ completion }) =>
-          completion.id === value.id &&
-          completion.turn === value.turn &&
-          completion.resultSeq === value.resultSeq &&
-          completion.status === value.status,
-      );
+      const indexPath = join(this.root, "completions.index.json");
+      const targetKey = `${value.id}:${value.turn}:${value.resultSeq}:${value.status}`;
+
+      let index: { offset: number; lastCursor: number; keys: string[] } | undefined;
+      try {
+        const raw = await readFile(indexPath, "utf8");
+        const parsed = JSON.parse(raw);
+        if (
+          typeof parsed.offset === "number" &&
+          typeof parsed.lastCursor === "number" &&
+          Array.isArray(parsed.keys)
+        ) {
+          index = parsed;
+        }
+      } catch {
+        /* index missing or invalid */
+      }
+
+      let feedSize = 0;
+      try {
+        feedSize = (await stat(feedPath)).size;
+      } catch (error: any) {
+        if (error.code !== "ENOENT") throw error;
+      }
+
+      if (!index || feedSize < index.offset) {
+        const lastCursor = await getLastSeqAndRepair(feedPath);
+        const allEntries = await this.readCompletionFeed();
+        index = {
+          offset: feedSize,
+          lastCursor,
+          keys: allEntries.map(
+            ({ completion: c }) => `${c.id}:${c.turn}:${c.resultSeq}:${c.status}`,
+          ),
+        };
+      } else if (feedSize > index.offset) {
+        const newRecords = await this.readCompletionFeedFrom(
+          index.offset,
+          index.lastCursor,
+        );
+        for (const { entry, endOffset } of newRecords) {
+          const c = entry.completion;
+          index.keys.push(`${c.id}:${c.turn}:${c.resultSeq}:${c.status}`);
+          index.lastCursor = entry.cursor;
+          index.offset = endOffset;
+        }
+      }
+
+      const existing = index.keys.includes(targetKey);
       if (!existing) {
         let ownerSessionKey: string | null = ownerOverride ?? null;
         if (ownerOverride === undefined) {
@@ -212,9 +253,10 @@ export class ProtocolStore {
             if (error.code !== "ENOENT") throw error;
           }
         }
+        const cursor = index.lastCursor + 1;
         const entry: CompletionFeedEntry = {
           version: 1,
-          cursor: lastCursor + 1,
+          cursor,
           ownerSessionKey,
           completion: value,
         };
@@ -223,7 +265,17 @@ export class ProtocolStore {
           flag: "a",
           mode: 0o600,
         });
+        let newSize = feedSize;
+        try {
+          newSize = (await stat(feedPath)).size;
+        } catch {
+          /* ignore stat error */
+        }
+        index.lastCursor = cursor;
+        index.offset = newSize;
+        index.keys.push(targetKey);
       }
+      await atomicJson(indexPath, index);
       // The per-worker file is only a latest-completion cache. The feed above
       // is the durable history and must be published first.
       await atomicJson(this.path(value.id, "completion.json"), value);
@@ -666,15 +718,45 @@ export class ProtocolStore {
     }
   }
   private async acquire(lock: string): Promise<void> {
+    const ownerFile = join(lock, "owner.json");
     for (let attempt = 0; attempt < 100; attempt++) {
       try {
         await mkdir(lock);
+        try {
+          await writeFile(
+            ownerFile,
+            JSON.stringify({ pid: process.pid, createdAt: Date.now() }),
+            { mode: 0o600 },
+          );
+        } catch {
+          // best-effort write
+        }
         return;
       } catch (error: any) {
         if (error.code !== "EEXIST") throw error;
         try {
-          if (Date.now() - (await stat(lock)).mtimeMs > 30_000)
+          let isStale = false;
+          try {
+            const raw = await readFile(ownerFile, "utf8");
+            const data = JSON.parse(raw);
+            if (typeof data.pid === "number") {
+              try {
+                process.kill(data.pid, 0);
+              } catch {
+                isStale = true;
+              }
+            }
+          } catch {
+            /* ownerFile missing or unreadable */
+          }
+          if (!isStale) {
+            if (Date.now() - (await stat(lock)).mtimeMs > 10_000) {
+              isStale = true;
+            }
+          }
+          if (isStale) {
             await rm(lock, { recursive: true, force: true });
+          }
         } catch {
           /* raced with lock owner */
         }

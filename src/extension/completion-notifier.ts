@@ -48,6 +48,7 @@ export interface CompletionNotifierOptions {
   ownerSessionKey: string;
   consumer?: string;
   intervalMs?: number;
+  autoRecover?: boolean;
   onError?: (error: unknown) => void;
   deliveryOptions?: {
     triggerTurn?: boolean;
@@ -110,24 +111,43 @@ export class CompletionNotifier {
 
   private async performPoll(): Promise<void> {
     try {
+      if (
+        this.options.autoRecover !== false &&
+        typeof this.manager.list === "function"
+      ) {
+        await this.manager.list().catch(() => undefined);
+      }
       const entries = await this.manager.completions({
         consumer: this.consumer,
         ownerSessionKey: this.options.ownerSessionKey,
       });
-      for (const entry of entries) {
+      const validEntries = entries.filter(
+        (e) =>
+          e.completion.status === "completed" ||
+          e.completion.status === "failed",
+      );
+      const unhandledEntries = entries.filter(
+        (e) =>
+          e.completion.status !== "completed" &&
+          e.completion.status !== "failed",
+      );
+      for (const entry of unhandledEntries) {
+        await this.manager.ackCompletion(
+          this.consumer,
+          this.options.ownerSessionKey,
+          entry.cursor,
+        );
+      }
+
+      const triggerTurnPolicy = this.options.deliveryOptions?.triggerTurn ?? true;
+      const deliverAs = this.options.deliveryOptions?.deliverAs ?? "followUp";
+
+      for (let i = 0; i < validEntries.length; i++) {
         if (this.disposed) break;
+        const entry = validEntries[i]!;
         const completion = entry.completion;
-        if (
-          completion.status !== "completed" &&
-          completion.status !== "failed"
-        ) {
-          await this.manager.ackCompletion(
-            this.consumer,
-            this.options.ownerSessionKey,
-            entry.cursor,
-          );
-          continue;
-        }
+        const isLast = i === validEntries.length - 1;
+        const shouldTrigger = isLast && triggerTurnPolicy;
 
         const payload = subagentCompletionPayload(completion);
         const content = formatCompletionNotification(completion);
@@ -139,8 +159,9 @@ export class CompletionNotifier {
             display: true,
             details: payload,
           },
-          this.options.deliveryOptions ?? {
-            deliverAs: "followUp",
+          {
+            deliverAs,
+            triggerTurn: shouldTrigger,
           },
         );
 

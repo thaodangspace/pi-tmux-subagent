@@ -10,7 +10,8 @@ export type WorkerStatus =
   | "failed"
   | "stopped"
   | "killed"
-  | "orphaned";
+  | "orphaned"
+  | "unresponsive";
 export type WorkspaceMode = "current" | "worktree";
 export interface WorkspaceMetadata {
   mode: WorkspaceMode;

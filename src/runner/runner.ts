@@ -25,6 +25,7 @@ interface ActiveTurnContext {
 export interface RunnerOptions {
   pollMs?: number;
   heartbeatMs?: number;
+  unresponsiveMs?: number;
   rpcCommand?: string;
   rpcArgs?: string[];
   output?: NodeJS.WritableStream;
@@ -32,13 +33,18 @@ export interface RunnerOptions {
 
 export class Runner {
   private stopped = false;
+  private failed = false;
   private turnText = "";
   private currentTurn = 0;
   private activeTurn: ActiveTurnContext | undefined;
   private readonly pendingTurnCommandSeqs: number[] = [];
+  private inFlightCommand: { seq: number; startedAt: number } | undefined;
+  private isUnresponsive = false;
   private lastProcessedCommandSeq = 0;
-  private heartbeat?: NodeJS.Timeout;
+  private heartbeat: NodeJS.Timeout | undefined;
   private recordQueue: Promise<void> = Promise.resolve();
+  private rpcEventQueue: Promise<void> = Promise.resolve();
+  private failQueue: Promise<void> = Promise.resolve();
   private readonly store: ProtocolStore;
   private readonly id: WorkerId;
   private rpc!: RpcClient;
@@ -57,6 +63,61 @@ export class Runner {
     const state = await this.store.readState(this.id).catch(() => undefined);
     this.lastProcessedCommandSeq = state?.lastCommandSeq ?? 0;
     this.currentTurn = state?.turn ?? 0;
+
+    if (state && state.turn > 0) {
+      const lastResult = await this.store
+        .readResult(this.id)
+        .catch(() => undefined);
+      if (lastResult && lastResult.turn === state.turn) {
+        const lastCompletion = await this.store
+          .readCompletion(this.id)
+          .catch(() => undefined);
+        if (!lastCompletion || lastCompletion.turn !== state.turn) {
+          await this.store
+            .writeCompletion(completedNotification(lastResult))
+            .catch(() => undefined);
+        }
+      } else if (!lastResult || lastResult.turn < state.turn) {
+        await this.record({
+          type: "turn_interrupted",
+          data: "Turn interrupted by runner crash/restart",
+        }).catch(() => undefined);
+        const currentState = await this.store
+          .readState(this.id)
+          .catch(() => undefined);
+        const resultSeq = currentState?.lastEventSeq ?? state.lastEventSeq;
+        const failedResult: WorkerResult = {
+          version: 1,
+          id: this.id,
+          status: "failed",
+          turn: state.turn,
+          ...(state.lastCommandSeq > 0
+            ? { commandSeq: state.lastCommandSeq }
+            : {}),
+          resultSeq,
+          eventSeq: resultSeq,
+          text: "Turn interrupted by runner crash/restart",
+          completedAt: new Date().toISOString(),
+          ...(meta.workspace ? { workspace: meta.workspace } : {}),
+        };
+        await this.store.writeResult(failedResult).catch(() => undefined);
+        await this.store
+          .writeCompletion({
+            version: 1,
+            id: this.id,
+            turn: state.turn,
+            ...(state.lastCommandSeq > 0
+              ? { commandSeq: state.lastCommandSeq }
+              : {}),
+            resultSeq,
+            status: "failed",
+            summary: completionSummary("Turn interrupted by runner crash/restart"),
+            hasDetails: true,
+            completedAt: failedResult.completedAt,
+          })
+          .catch(() => undefined);
+      }
+    }
 
     const sessionArgs = meta.piSessionFile
       ? ["--session", meta.piSessionFile]
@@ -97,13 +158,17 @@ export class Runner {
       void this.store.appendRunnerLog(this.id, String(text));
     });
     this.rpc.on("event", (event) => {
-      void this.onRpc(event);
+      this.rpcEventQueue = this.rpcEventQueue
+        .then(() => this.onRpc(event))
+        .catch((error) => {
+          void this.failOnce(error);
+        });
     });
     this.rpc.on("error", (error) => {
-      void this.fail(error);
+      void this.failOnce(error);
     });
     this.rpc.on("exit", (data) => {
-      if (!this.stopped) void this.fail(data);
+      if (!this.stopped) void this.failOnce(data);
     });
     this.rpc.start();
 
@@ -159,13 +224,22 @@ export class Runner {
       void this.touch();
     }, this.options.heartbeatMs ?? 2_000);
 
-    while (!this.stopped) {
-      await this.consume();
-      await new Promise((resolve) =>
-        setTimeout(resolve, this.options.pollMs ?? 100),
-      );
+    try {
+      while (!this.stopped) {
+        await this.consume();
+        await new Promise((resolve) =>
+          setTimeout(resolve, this.options.pollMs ?? 100),
+        );
+      }
+    } catch (error) {
+      await this.failOnce(error);
+    } finally {
+      if (this.heartbeat) {
+        clearInterval(this.heartbeat);
+        this.heartbeat = undefined;
+      }
+      this.rpc?.stop();
     }
-    if (this.heartbeat) clearInterval(this.heartbeat);
   }
 
   private async touch(): Promise<void> {
@@ -175,7 +249,29 @@ export class Runner {
       heartbeatAt: new Date().toISOString(),
       runnerPid: process.pid,
       ...(this.rpc.pid ? { piPid: this.rpc.pid } : {}),
+      ...(this.inFlightCommand
+        ? {
+            inFlightCommand: {
+              seq: this.inFlightCommand.seq,
+              startedAt: new Date(this.inFlightCommand.startedAt).toISOString(),
+            },
+          }
+        : {}),
     });
+
+    if (
+      this.inFlightCommand &&
+      !this.isUnresponsive &&
+      Date.now() - this.inFlightCommand.startedAt >=
+        (this.options.unresponsiveMs ?? 10_000)
+    ) {
+      this.isUnresponsive = true;
+      await this.record({
+        type: "unresponsive",
+        commandSeq: this.inFlightCommand.seq,
+        data: `RPC command ${this.inFlightCommand.seq} unresponsive after ${Date.now() - this.inFlightCommand.startedAt}ms`,
+      }).catch(() => undefined);
+    }
   }
 
   async consume(): Promise<void> {
@@ -197,9 +293,11 @@ export class Runner {
       // Queue before calling RPC because agent_start may arrive before the RPC
       // request promise resolves. It is consumed only when that turn starts.
       this.pendingTurnCommandSeqs.push(command.seq);
+      this.inFlightCommand = { seq: command.seq, startedAt: Date.now() };
       try {
         if (command.type === "prompt") await this.rpc.prompt(command.text);
         else await this.rpc.prompt(command.text, "followUp");
+        this.inFlightCommand = undefined;
       } catch (error) {
         const index = this.pendingTurnCommandSeqs.indexOf(command.seq);
         if (index >= 0) this.pendingTurnCommandSeqs.splice(index, 1);
@@ -211,8 +309,7 @@ export class Runner {
     } else if (command.type === "abort") {
       await this.rpc.abort();
       await this.recordRelatedCommand(command);
-    }
-    else if (command.type === "stop") {
+    } else if (command.type === "stop") {
       await this.rpc.abort().catch(() => undefined);
       this.stopped = true;
       this.rpc.stop();
@@ -222,6 +319,14 @@ export class Runner {
   }
 
   private async onRpc(event: any): Promise<void> {
+    if (this.isUnresponsive) {
+      this.isUnresponsive = false;
+      await this.record({
+        type: "responsive",
+        data: "RPC worker resumed responding",
+      }).catch(() => undefined);
+    }
+
     const display = renderRpcEvent(event);
     if (display) (this.options.output ?? process.stdout).write(display);
 
@@ -271,6 +376,11 @@ export class Runner {
     });
 
     if (event.type === "agent_settled") {
+      const completedTurnContext = this.activeTurn;
+      const completedText = this.turnText;
+      const completedTurnNumber = this.currentTurn;
+      this.activeTurn = undefined;
+
       const state = await this.store.readState(this.id);
       const meta = await this.store.readMeta(this.id);
       const workspace =
@@ -283,11 +393,11 @@ export class Runner {
         version: 1,
         id: this.id,
         status: "completed",
-        turn: this.currentTurn,
-        ...(this.activeTurn?.initiatingCommandSeq !== undefined
-          ? { commandSeq: this.activeTurn.initiatingCommandSeq }
+        turn: completedTurnNumber,
+        ...(completedTurnContext?.initiatingCommandSeq !== undefined
+          ? { commandSeq: completedTurnContext.initiatingCommandSeq }
           : {}),
-        text: this.turnText,
+        text: completedText,
         completedAt: new Date().toISOString(),
         resultSeq: state.lastEventSeq,
         eventSeq: state.lastEventSeq,
@@ -296,7 +406,6 @@ export class Runner {
       // The complete response is durable before its compact notification is published.
       await this.store.writeResult(result);
       await this.store.writeCompletion(completedNotification(result));
-      this.activeTurn = undefined;
     }
   }
 
@@ -329,38 +438,57 @@ export class Runner {
     return operation;
   }
 
-  private async fail(error: unknown): Promise<void> {
-    const message = error instanceof Error ? error.message : String(error);
-    await this.record({ type: "failed", data: message });
-    const state = await this.store.readState(this.id);
-    const meta = await this.store.readMeta(this.id);
-    await this.store.writeResult({
-      version: 1,
-      id: this.id,
-      status: "failed",
-      turn: state.turn,
-      ...(this.activeTurn?.initiatingCommandSeq !== undefined
-        ? { commandSeq: this.activeTurn.initiatingCommandSeq }
-        : {}),
-      resultSeq: state.lastEventSeq,
-      eventSeq: state.lastEventSeq,
-      text: message || "Worker failed.",
-      completedAt: state.lastEventAt ?? new Date().toISOString(),
-      ...(meta.workspace ? { workspace: meta.workspace } : {}),
+  private failOnce(error: unknown): Promise<void> {
+    const operation = this.failQueue.then(async () => {
+      if (this.failed) return;
+      this.failed = true;
+      this.stopped = true;
+      if (this.heartbeat) {
+        clearInterval(this.heartbeat);
+        this.heartbeat = undefined;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      await this.record({ type: "failed", data: message }).catch(() => undefined);
+      const state = await this.store.readState(this.id).catch(() => undefined);
+      const meta = await this.store.readMeta(this.id).catch(() => undefined);
+      const turn = state?.turn ?? this.currentTurn;
+      const resultSeq = state?.lastEventSeq ?? 0;
+      const completedAt = state?.lastEventAt ?? new Date().toISOString();
+      const commandSeq =
+        this.activeTurn?.initiatingCommandSeq ?? this.inFlightCommand?.seq;
+
+      await this.store
+        .writeResult({
+          version: 1,
+          id: this.id,
+          status: "failed",
+          turn,
+          ...(commandSeq !== undefined ? { commandSeq } : {}),
+          resultSeq,
+          eventSeq: resultSeq,
+          text: message || "Worker failed.",
+          completedAt,
+          ...(meta?.workspace ? { workspace: meta.workspace } : {}),
+        })
+        .catch(() => undefined);
+
+      await this.store
+        .writeCompletion({
+          version: 1,
+          id: this.id,
+          turn,
+          ...(commandSeq !== undefined ? { commandSeq } : {}),
+          resultSeq,
+          status: "failed",
+          summary: completionSummary(message || "Worker failed."),
+          hasDetails: true,
+          completedAt,
+        })
+        .catch(() => undefined);
+
+      this.rpc?.stop();
     });
-    await this.store.writeCompletion({
-      version: 1,
-      id: this.id,
-      turn: state.turn,
-      ...(this.activeTurn?.initiatingCommandSeq !== undefined
-        ? { commandSeq: this.activeTurn.initiatingCommandSeq }
-        : {}),
-      resultSeq: state.lastEventSeq,
-      status: "failed",
-      summary: completionSummary(message || "Worker failed."),
-      hasDetails: true,
-      completedAt: state.lastEventAt ?? new Date().toISOString(),
-    });
-    this.stopped = true;
+    this.failQueue = operation.catch(() => undefined);
+    return operation;
   }
 }

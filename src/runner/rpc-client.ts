@@ -36,6 +36,7 @@ export interface RpcClientOptions {
   args?: string[];
   cwd: string;
   env?: NodeJS.ProcessEnv;
+  requestTimeoutMs?: number;
 }
 
 export class RpcClient extends EventEmitter {
@@ -138,19 +139,60 @@ export class RpcClient extends EventEmitter {
     }
     this.emit("event", value);
   }
-  send(command: Record<string, unknown>): Promise<any> {
+  notify(command: Record<string, unknown>): Promise<void> {
+    if (!this.child?.stdin.writable)
+      return Promise.reject(
+        new SubagentError("RPC_NOT_RUNNING", "RPC child is not running"),
+      );
+    return new Promise((resolve, reject) => {
+      this.child!.stdin.write(`${JSON.stringify(command)}\n`, (error) => {
+        if (error) reject(error);
+        else resolve();
+      });
+    });
+  }
+  send(command: Record<string, unknown>, timeoutMs?: number): Promise<any> {
+    if (command.type === "extension_ui_response") {
+      return this.notify(command);
+    }
     if (!this.child?.stdin.writable)
       return Promise.reject(
         new SubagentError("RPC_NOT_RUNNING", "RPC child is not running"),
       );
     const id =
       typeof command.id === "string" ? command.id : `cmd-${++this.request}`;
+    const timeout = timeoutMs ?? this.options.requestTimeoutMs;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      let timer: NodeJS.Timeout | undefined;
+      if (timeout && timeout > 0) {
+        timer = setTimeout(() => {
+          if (this.pending.has(id)) {
+            this.pending.delete(id);
+            reject(
+              new SubagentError(
+                "RPC_REQUEST_TIMEOUT",
+                `RPC request ${id} timed out after ${timeout}ms`,
+              ),
+            );
+          }
+        }, timeout);
+        timer.unref?.();
+      }
+      this.pending.set(id, {
+        resolve: (val) => {
+          if (timer) clearTimeout(timer);
+          resolve(val);
+        },
+        reject: (err) => {
+          if (timer) clearTimeout(timer);
+          reject(err);
+        },
+      });
       this.child!.stdin.write(
         `${JSON.stringify({ ...command, id })}\n`,
         (error) => {
           if (error) {
+            if (timer) clearTimeout(timer);
             this.pending.delete(id);
             reject(error);
           }
