@@ -6,6 +6,7 @@ import { Recovery } from "../../src/manager/recovery.js";
 import { ProtocolStore } from "../../src/protocol/store.js";
 import { TmuxAdapter, type Executor } from "../../src/tmux/adapter.js";
 import { workerId } from "../../src/types.js";
+import type { WorkerEvent } from "../../src/protocol/types.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -257,5 +258,52 @@ describe("recovery", () => {
     const state = await recovery.recover(id);
     // Because runner is dead and heartbeat is stale, recovery marks it orphaned
     expect(state.status).toBe("orphaned");
+  });
+
+  it("serializes concurrent recovery invocations via worker lock so single transition occurs", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-sa-"));
+    roots.push(root);
+    const store = new ProtocolStore(root);
+    const id = workerId("concurrent-rec");
+    await store.create(
+      {
+        version: 1,
+        id,
+        tmuxSession: "pi-sa-concurrent-rec",
+        createdAt: "2000-01-01T00:00:00Z",
+        cwd: root,
+        launch: { task: "concurrent" },
+        runnerPid: 999999,
+        piPid: 999998,
+        heartbeatAt: "2000-01-01T00:00:00Z",
+      },
+      {
+        version: 1,
+        id,
+        status: "waiting",
+        turn: 0,
+        lastCommandSeq: 0,
+        lastEventSeq: 0,
+      },
+    );
+    await store.appendEvent(id, { type: "rpc_started" });
+
+    const exec = vi
+      .fn<Executor>()
+      .mockResolvedValue({ code: 1, stdout: "", stderr: "" });
+    const recovery1 = new Recovery(store, new TmuxAdapter(exec), { orphanGraceMs: 0 });
+    const recovery2 = new Recovery(store, new TmuxAdapter(exec), { orphanGraceMs: 0 });
+
+    const [state1, state2] = await Promise.all([
+      recovery1.recover(id),
+      recovery2.recover(id),
+    ]);
+
+    expect(state1.status).toBe("orphaned");
+    expect(state2.status).toBe("orphaned");
+
+    const events = await store.readLog<WorkerEvent>(id, "events");
+    const orphanedEvents = events.filter((e) => e.type === "orphaned");
+    expect(orphanedEvents).toHaveLength(1);
   });
 });

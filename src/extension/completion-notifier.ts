@@ -19,6 +19,12 @@ export interface SubagentCompletionPayload {
 export function formatCompletionNotification(
   completion: WorkerCompletion,
 ): string {
+  if (completion.kind === "worker") {
+    return [
+      `[subagent ${completion.id} ${completion.status}]`,
+      completion.summary,
+    ].join("\n");
+  }
   return [
     `[subagent ${completion.id} ${completion.status}]`,
     completion.summary,
@@ -31,7 +37,10 @@ export function subagentCompletionPayload(
 ): SubagentCompletionPayload {
   return {
     type: "subagent_completed",
-    completionKey: `${completion.id}:${completion.turn}:${completion.resultSeq}:${completion.status}`,
+    completionKey:
+      completion.kind === "worker"
+        ? `${completion.id}:worker:${completion.resultSeq}:${completion.status}`
+        : `${completion.id}:${completion.turn}:${completion.resultSeq}:${completion.status}`,
     id: completion.id,
     turn: completion.turn,
     ...(completion.commandSeq !== undefined

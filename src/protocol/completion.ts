@@ -42,6 +42,7 @@ export function completedNotification(
   const summary = completionSummary(result.text, explicitSummary);
   return {
     version: 1,
+    kind: "turn",
     id: result.id,
     turn: result.turn,
     ...(result.commandSeq !== undefined

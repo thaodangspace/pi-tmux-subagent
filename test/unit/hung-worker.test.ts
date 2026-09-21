@@ -167,4 +167,51 @@ describe("hung worker handling", () => {
     resolvePrompt!();
     await executePromise.catch(() => undefined);
   });
+
+  it("transitions to unresponsive when an active turn stops emitting progress, and recovers when progress resumes", async () => {
+    const { store, id } = await fixture();
+
+    const runner = new Runner(store.dir(id), {
+      unresponsiveMs: 40,
+    }) as any;
+
+    let resolvePrompt: () => void;
+    runner.rpc = {
+      pid: 12345,
+      prompt: vi.fn(() => {
+        return new Promise<void>((resolve) => {
+          resolvePrompt = resolve;
+        });
+      }),
+    };
+
+    const cmd = await store.appendCommand(id, {
+      type: "prompt",
+      text: "turn that stalls mid-execution",
+    });
+    const executePromise = runner.execute(cmd);
+
+    // Turn starts
+    await runner.onRpc({ type: "agent_start" });
+    let state = await store.readState(id);
+    expect(state.status).toBe("running");
+
+    // Wait past unresponsive threshold without any RPC activity
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await runner.touch();
+
+    // Verify transition to unresponsive during active turn
+    state = await store.readState(id);
+    expect(state.status).toBe("unresponsive");
+
+    // Activity arrives (e.g. streaming assistant delta)
+    await runner.onRpc({ type: "message_delta", delta: "still thinking" });
+
+    // Verify recovery back to running
+    state = await store.readState(id);
+    expect(state.status).toBe("running");
+
+    resolvePrompt!();
+    await executePromise.catch(() => undefined);
+  });
 });

@@ -1,6 +1,5 @@
 import { ProtocolStore } from "../protocol/store.js";
 import { assistantText } from "../protocol/events.js";
-import { reduceEvents } from "../protocol/state.js";
 import {
   completedNotification,
   completionSummary,
@@ -40,6 +39,7 @@ export class Runner {
   private readonly pendingTurnCommandSeqs: number[] = [];
   private inFlightCommand: { seq: number; startedAt: number } | undefined;
   private isUnresponsive = false;
+  private lastTurnActivityAt: number | undefined;
   private lastProcessedCommandSeq = 0;
   private heartbeat: NodeJS.Timeout | undefined;
   private recordQueue: Promise<void> = Promise.resolve();
@@ -64,6 +64,8 @@ export class Runner {
     this.lastProcessedCommandSeq = state?.lastCommandSeq ?? 0;
     this.currentTurn = state?.turn ?? 0;
 
+    const events = await this.store.readLog<WorkerEvent>(this.id, "events").catch(() => []);
+
     if (state && state.turn > 0) {
       const lastResult = await this.store
         .readResult(this.id)
@@ -86,13 +88,21 @@ export class Runner {
           .readState(this.id)
           .catch(() => undefined);
         const resultSeq = currentState?.lastEventSeq ?? state.lastEventSeq;
+
+        // Recover initiating command from durable turn context, not lastCommandSeq
+        const lastAgentStart = [...events].reverse().find((e) => e.type === "agent_start");
+        const initiatingCommandSeq =
+          (lastAgentStart?.data as any)?.turnContext?.initiatingCommandSeq ??
+          lastAgentStart?.commandSeq ??
+          (state.lastCommandSeq > 0 ? state.lastCommandSeq : undefined);
+
         const failedResult: WorkerResult = {
           version: 1,
           id: this.id,
           status: "failed",
           turn: state.turn,
-          ...(state.lastCommandSeq > 0
-            ? { commandSeq: state.lastCommandSeq }
+          ...(initiatingCommandSeq !== undefined
+            ? { commandSeq: initiatingCommandSeq }
             : {}),
           resultSeq,
           eventSeq: resultSeq,
@@ -104,10 +114,11 @@ export class Runner {
         await this.store
           .writeCompletion({
             version: 1,
+            kind: "turn",
             id: this.id,
             turn: state.turn,
-            ...(state.lastCommandSeq > 0
-              ? { commandSeq: state.lastCommandSeq }
+            ...(initiatingCommandSeq !== undefined
+              ? { commandSeq: initiatingCommandSeq }
               : {}),
             resultSeq,
             status: "failed",
@@ -117,6 +128,57 @@ export class Runner {
           })
           .catch(() => undefined);
       }
+    }
+
+    // Recover commands acknowledged by RPC before crash but whose turn never started
+    const commands = await this.store.readLog<WorkerCommand>(this.id, "commands").catch(() => []);
+    const ackedCmdSeqs = new Set(
+      events.filter((e) => e.type === "command_ack" && e.commandSeq).map((e) => e.commandSeq!),
+    );
+    const turnInitiatingCmds = commands.filter(
+      (cmd) => (cmd.type === "prompt" || cmd.type === "send") && ackedCmdSeqs.has(cmd.seq),
+    );
+    const startedCount = events.filter((e) => e.type === "agent_start").length;
+    const unstartedCmds = turnInitiatingCmds.slice(startedCount);
+
+    for (const cmd of unstartedCmds) {
+      const unstartedTurn = Math.max(state?.turn ?? 0, this.currentTurn) + 1;
+      this.currentTurn = unstartedTurn;
+      await this.record({
+        type: "turn_interrupted",
+        commandSeq: cmd.seq,
+        data: "Turn interrupted before start by runner crash/restart",
+      }).catch(() => undefined);
+      const currentState = await this.store.readState(this.id).catch(() => undefined);
+      const resultSeq = currentState?.lastEventSeq ?? 0;
+      const failedResult: WorkerResult = {
+        version: 1,
+        id: this.id,
+        status: "failed",
+        turn: unstartedTurn,
+        commandSeq: cmd.seq,
+        resultSeq,
+        eventSeq: resultSeq,
+        text: "Turn interrupted before start by runner crash/restart",
+        completedAt: new Date().toISOString(),
+        ...(meta.workspace ? { workspace: meta.workspace } : {}),
+      };
+      await this.store.writeResult(failedResult).catch(() => undefined);
+      await this.store
+        .writeCompletion({
+          version: 1,
+          kind: "turn",
+          id: this.id,
+          turn: unstartedTurn,
+          commandSeq: cmd.seq,
+          resultSeq,
+          status: "failed",
+          summary: completionSummary("Turn interrupted before start by runner crash/restart"),
+          hasDetails: true,
+          completedAt: failedResult.completedAt,
+        })
+        .catch(() => undefined);
+      this.lastProcessedCommandSeq = Math.max(this.lastProcessedCommandSeq, cmd.seq);
     }
 
     const sessionArgs = meta.piSessionFile
@@ -259,17 +321,31 @@ export class Runner {
         : {}),
     });
 
+    const threshold = this.options.unresponsiveMs ?? 10_000;
     if (
       this.inFlightCommand &&
       !this.isUnresponsive &&
-      Date.now() - this.inFlightCommand.startedAt >=
-        (this.options.unresponsiveMs ?? 10_000)
+      Date.now() - this.inFlightCommand.startedAt >= threshold
     ) {
       this.isUnresponsive = true;
       await this.record({
         type: "unresponsive",
         commandSeq: this.inFlightCommand.seq,
         data: `RPC command ${this.inFlightCommand.seq} unresponsive after ${Date.now() - this.inFlightCommand.startedAt}ms`,
+      }).catch(() => undefined);
+    } else if (
+      this.activeTurn &&
+      this.lastTurnActivityAt !== undefined &&
+      !this.isUnresponsive &&
+      Date.now() - this.lastTurnActivityAt >= threshold
+    ) {
+      this.isUnresponsive = true;
+      await this.record({
+        type: "unresponsive",
+        ...(this.activeTurn.initiatingCommandSeq !== undefined
+          ? { commandSeq: this.activeTurn.initiatingCommandSeq }
+          : {}),
+        data: `Active turn ${this.activeTurn.turn} unresponsive after ${Date.now() - this.lastTurnActivityAt}ms`,
       }).catch(() => undefined);
     }
   }
@@ -319,6 +395,7 @@ export class Runner {
   }
 
   private async onRpc(event: any): Promise<void> {
+    this.lastTurnActivityAt = Date.now();
     if (this.isUnresponsive) {
       this.isUnresponsive = false;
       await this.record({
@@ -376,6 +453,7 @@ export class Runner {
     });
 
     if (event.type === "agent_settled") {
+      this.lastTurnActivityAt = undefined;
       const completedTurnContext = this.activeTurn;
       const completedText = this.turnText;
       const completedTurnNumber = this.currentTurn;
@@ -430,9 +508,7 @@ export class Runner {
     value: Omit<WorkerEvent, "version" | "seq" | "at">,
   ): Promise<void> {
     const operation = this.recordQueue.then(async () => {
-      const event = await this.store.appendEvent(this.id, value);
-      const current = await this.store.readState(this.id);
-      await this.store.writeState(reduceEvents(current, [event]));
+      await this.store.appendEventAndProjectState(this.id, value);
     });
     this.recordQueue = operation.catch(() => undefined);
     return operation;
@@ -454,37 +530,56 @@ export class Runner {
       const turn = state?.turn ?? this.currentTurn;
       const resultSeq = state?.lastEventSeq ?? 0;
       const completedAt = state?.lastEventAt ?? new Date().toISOString();
+      const hasActiveTurn = Boolean(this.activeTurn || this.inFlightCommand);
       const commandSeq =
         this.activeTurn?.initiatingCommandSeq ?? this.inFlightCommand?.seq;
 
-      await this.store
-        .writeResult({
-          version: 1,
-          id: this.id,
-          status: "failed",
-          turn,
-          ...(commandSeq !== undefined ? { commandSeq } : {}),
-          resultSeq,
-          eventSeq: resultSeq,
-          text: message || "Worker failed.",
-          completedAt,
-          ...(meta?.workspace ? { workspace: meta.workspace } : {}),
-        })
-        .catch(() => undefined);
+      if (hasActiveTurn) {
+        await this.store
+          .writeResult({
+            version: 1,
+            id: this.id,
+            status: "failed",
+            turn,
+            ...(commandSeq !== undefined ? { commandSeq } : {}),
+            resultSeq,
+            eventSeq: resultSeq,
+            text: message || "Worker failed.",
+            completedAt,
+            ...(meta?.workspace ? { workspace: meta.workspace } : {}),
+          })
+          .catch(() => undefined);
 
-      await this.store
-        .writeCompletion({
-          version: 1,
-          id: this.id,
-          turn,
-          ...(commandSeq !== undefined ? { commandSeq } : {}),
-          resultSeq,
-          status: "failed",
-          summary: completionSummary(message || "Worker failed."),
-          hasDetails: true,
-          completedAt,
-        })
-        .catch(() => undefined);
+        await this.store
+          .writeCompletion({
+            version: 1,
+            kind: "turn",
+            id: this.id,
+            turn,
+            ...(commandSeq !== undefined ? { commandSeq } : {}),
+            resultSeq,
+            status: "failed",
+            summary: completionSummary(message || "Worker failed."),
+            hasDetails: true,
+            completedAt,
+          })
+          .catch(() => undefined);
+      } else {
+        // Idle worker death: do NOT overwrite previous turn result! Emit worker lifecycle notification.
+        await this.store
+          .writeCompletion({
+            version: 1,
+            kind: "worker",
+            id: this.id,
+            turn,
+            resultSeq,
+            status: "failed",
+            summary: completionSummary(message || "Worker failed."),
+            hasDetails: false,
+            completedAt,
+          })
+          .catch(() => undefined);
+      }
 
       this.rpc?.stop();
     });

@@ -138,17 +138,10 @@ export class Manager {
           childEnv,
         );
       } catch (error) {
-        const event = await this.store.appendEvent(id, {
+        const { event, state: failed } = await this.store.appendEventAndProjectState(id, {
           type: "failed",
           data: error instanceof Error ? error.message : error,
         });
-        const failed = {
-          ...state,
-          status: "failed" as const,
-          lastEventSeq: event.seq,
-          lastEventAt: event.at,
-        };
-        await this.store.writeState(failed);
         await this.store.writeResult({
           version: 1,
           id,
@@ -163,6 +156,7 @@ export class Manager {
         });
         await this.store.writeCompletion({
           version: 1,
+          kind: "turn",
           id,
           turn: failed.turn,
           commandSeq: 1,
@@ -380,46 +374,69 @@ export class Manager {
   }
   async forceTerminate(id: string): Promise<WorkerState> {
     const value = workerId(id);
-    const meta = await this.store.readMeta(value).catch(() => undefined);
-    // tmux termination kills the tagged pane or standalone session and its
-    // supervised runner/RPC process tree. The adapter treats absence as safe.
-    await this.tmux.terminate(value);
-    const current = await this.store.readState(value);
-    if (current.status === "killed") return current;
-    const event = await this.store.appendEvent(value, {
-      type: "killed",
-      data: "Force-terminated by supervisor",
+    return this.store.withWorkerLock(value, async () => {
+      const meta = await this.store.readMeta(value).catch(() => undefined);
+      // tmux termination kills the tagged pane or standalone session and its
+      // supervised runner/RPC process tree. The adapter treats absence as safe.
+      await this.tmux.terminate(value);
+      const current = await this.store.readState(value);
+      if (current.status === "killed") return current;
+
+      const recentEvents = await this.store.readLogTail<WorkerEvent>(value, "events", 20).catch(() => []);
+      const lastAgentStart = [...recentEvents].reverse().find((e) => e.type === "agent_start");
+      const wasActiveTurn = current.status === "running" || current.status === "unresponsive";
+      const initiatingCmdSeq =
+        (lastAgentStart?.data as any)?.turnContext?.initiatingCommandSeq ??
+        lastAgentStart?.commandSeq ??
+        (current.lastCommandSeq > 0 ? current.lastCommandSeq : undefined);
+
+      const { event, state: killed } = await this.store.appendEventAndProjectState(value, {
+        type: "killed",
+        data: "Force-terminated by supervisor",
+      });
+
+      if (wasActiveTurn) {
+        const result: WorkerResult = {
+          version: 1,
+          id: value,
+          status: "failed",
+          turn: killed.turn,
+          ...(initiatingCmdSeq !== undefined ? { commandSeq: initiatingCmdSeq } : {}),
+          resultSeq: event.seq,
+          eventSeq: event.seq,
+          text: "Force-terminated by supervisor",
+          completedAt: event.at,
+          ...(meta?.workspace ? { workspace: meta.workspace } : {}),
+        };
+        await this.store.writeResult(result);
+        await this.store.writeCompletion({
+          version: 1,
+          kind: "turn",
+          id: value,
+          turn: killed.turn,
+          ...(initiatingCmdSeq !== undefined ? { commandSeq: initiatingCmdSeq } : {}),
+          resultSeq: event.seq,
+          status: "failed",
+          summary: completionSummary("Force-terminated by supervisor"),
+          hasDetails: true,
+          completedAt: event.at,
+        });
+      } else {
+        // Idle worker force-termination: do NOT overwrite previous turn result!
+        await this.store.writeCompletion({
+          version: 1,
+          kind: "worker",
+          id: value,
+          turn: killed.turn,
+          resultSeq: event.seq,
+          status: "failed",
+          summary: completionSummary("Force-terminated by supervisor"),
+          hasDetails: false,
+          completedAt: event.at,
+        });
+      }
+      return killed;
     });
-    const killed = {
-      ...current,
-      status: "killed" as const,
-      lastEventSeq: event.seq,
-      lastEventAt: event.at,
-    };
-    await this.store.writeState(killed);
-    const result: WorkerResult = {
-      version: 1,
-      id: value,
-      status: "failed",
-      turn: killed.turn,
-      resultSeq: event.seq,
-      eventSeq: event.seq,
-      text: "Force-terminated by supervisor",
-      completedAt: event.at,
-      ...(meta?.workspace ? { workspace: meta.workspace } : {}),
-    };
-    await this.store.writeResult(result);
-    await this.store.writeCompletion({
-      version: 1,
-      id: value,
-      turn: killed.turn,
-      resultSeq: event.seq,
-      status: "failed",
-      summary: completionSummary("Force-terminated by supervisor"),
-      hasDetails: true,
-      completedAt: event.at,
-    });
-    return killed;
   }
 }
 export type { WorkerId };

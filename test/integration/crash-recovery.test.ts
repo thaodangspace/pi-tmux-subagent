@@ -236,4 +236,46 @@ describe("crash recovery across turn boundaries", () => {
       summary: "Task completed successfully before crash",
     });
   });
+
+  it("boundary 1b: crash after command_ack before agent_start -> unstarted turn finalized with failed result + completion", async () => {
+    const { store, id } = await fixture("worker-b1b");
+
+    // Command was appended and command_ack was written, but runner crashed before agent_start
+    await store.appendCommand(id, { type: "prompt", text: "crash before start" });
+    await store.appendEvent(id, { type: "command_ack", commandSeq: 1 });
+    await store.writeState({
+      version: 1,
+      id,
+      status: "waiting",
+      turn: 0,
+      lastCommandSeq: 1,
+      lastEventSeq: 1,
+    });
+
+    const runner = new Runner(store.dir(id)) as any;
+    runner.rpc = {
+      start: vi.fn(),
+      stop: vi.fn(),
+      on: vi.fn(),
+    };
+
+    const runPromise = runner.run();
+    runner.stopped = true;
+    if (runner.heartbeat) clearInterval(runner.heartbeat);
+    await runPromise.catch(() => undefined);
+
+    // Turn 1 result and completion must be finalized with failure
+    const result = await store.readResult(id);
+    expect(result).toBeDefined();
+    expect(result?.turn).toBe(1);
+    expect(result?.commandSeq).toBe(1);
+    expect(result?.status).toBe("failed");
+    expect(result?.text).toContain("Turn interrupted before start by runner crash/restart");
+
+    const completion = await store.readCompletion(id);
+    expect(completion).toBeDefined();
+    expect(completion?.turn).toBe(1);
+    expect(completion?.commandSeq).toBe(1);
+    expect(completion?.status).toBe("failed");
+  });
 });

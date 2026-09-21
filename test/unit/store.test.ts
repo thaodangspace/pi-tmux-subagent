@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -193,5 +193,116 @@ describe("protocol store", () => {
     await expect(store.readLog("nonexistent", "events")).rejects.toMatchObject({
       code: "WORKER_NOT_FOUND",
     });
+  });
+
+  it("allows reentrant withWorkerLock within the same execution context", async () => {
+    const { store, id } = await fixture();
+    let innerRan = false;
+    await store.withWorkerLock(id, async () => {
+      await store.withWorkerLock(id, async () => {
+        innerRan = true;
+      });
+    });
+    expect(innerRan).toBe(true);
+  });
+
+  it("never breaks a lock while owner PID is alive, even if lock is old", async () => {
+    const { store, id } = await fixture();
+    const lockDir = store.path(id, ".worker.lock");
+    const ownerFile = join(lockDir, "owner.json");
+    await mkdir(lockDir, { recursive: true });
+    // Write current process.pid (alive)
+    await writeFile(
+      ownerFile,
+      JSON.stringify({ pid: process.pid, createdAt: Date.now() - 60_000 }),
+    );
+    // Artificially age the directory mtime to 60s ago
+    const oldTime = new Date(Date.now() - 60_000);
+    await utimes(lockDir, oldTime, oldTime);
+
+    // Attempting to acquire from a separate async context should time out without breaking the lock
+    await expect(
+      new Promise((_, reject) => {
+        setTimeout(async () => {
+          try {
+            await (store as any).acquire(lockDir);
+            reject(new Error("Should not acquire"));
+          } catch (err) {
+            reject(err);
+          }
+        }, 0);
+      }),
+    ).rejects.toMatchObject({
+      code: "STORE_LOCK_TIMEOUT",
+    });
+
+    await rm(lockDir, { recursive: true, force: true });
+  });
+
+  it("breaks a stale lock when owner PID is dead", async () => {
+    const { store, id } = await fixture();
+    const lockDir = store.path(id, ".worker.lock");
+    const ownerFile = join(lockDir, "owner.json");
+    await mkdir(lockDir, { recursive: true });
+    // PID 999999 is dead
+    await writeFile(
+      ownerFile,
+      JSON.stringify({ pid: 999999, createdAt: Date.now() - 20_000 }),
+    );
+
+    // acquire should detect dead PID, remove the stale lock, and succeed
+    await (store as any).acquire(lockDir);
+    const newOwner = JSON.parse(await readFile(ownerFile, "utf8"));
+    expect(newOwner.pid).toBe(process.pid);
+    await rm(lockDir, { recursive: true, force: true });
+  });
+
+  it("repairs incomplete completions.jsonl tails before appending next completion", async () => {
+    const { store, id } = await fixture();
+    const ownerSessionKey = "sess-1";
+    // 1. Write first completion
+    await store.writeCompletion(
+      {
+        version: 1,
+        id,
+        turn: 1,
+        resultSeq: 1,
+        status: "completed",
+        summary: "First",
+        hasDetails: true,
+        completedAt: new Date().toISOString(),
+      },
+      ownerSessionKey,
+    );
+
+    // 2. Corrupt tail of completions.jsonl with a partial unclosed JSON
+    const feedPath = join(store.root, "completions.jsonl");
+    const validContent = await readFile(feedPath, "utf8");
+    await writeFile(feedPath, `${validContent}{"version":1,"cursor":2,"owner`);
+
+    // 3. Write second completion
+    await store.writeCompletion(
+      {
+        version: 1,
+        id,
+        turn: 2,
+        resultSeq: 2,
+        status: "completed",
+        summary: "Second",
+        hasDetails: true,
+        completedAt: new Date().toISOString(),
+      },
+      ownerSessionKey,
+    );
+
+    // 4. Read completions feed and verify monotonic cursors 1 and 2
+    const entries = await store.completions({
+      consumer: "test",
+      ownerSessionKey,
+    });
+    expect(entries).toHaveLength(2);
+    expect(entries.map((e) => e.cursor)).toEqual([1, 2]);
+    expect(entries[0]!.completion.summary).toBe("First");
+    expect(entries[1]!.completion.summary).toBe("Second");
   });
 });

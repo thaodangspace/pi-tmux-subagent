@@ -29,7 +29,7 @@ describe("state reducer", () => {
     });
   });
 
-  it("transitions orphaned worker back to waiting when rpc_started arrives", () => {
+  it("does not revive orphaned worker on ordinary rpc_started event", () => {
     const id = workerId("abc123");
     const state = reduceEvents(
       {
@@ -43,6 +43,25 @@ describe("state reducer", () => {
       [
         { version: 1, seq: 1, at: "a", type: "orphaned" },
         { version: 1, seq: 2, at: "b", type: "rpc_started" },
+      ],
+    );
+    expect(state).toMatchObject({ status: "orphaned", lastEventSeq: 2 });
+  });
+
+  it("revives orphaned worker back to waiting when explicit liveness_recovered arrives", () => {
+    const id = workerId("abc123");
+    const state = reduceEvents(
+      {
+        version: 1,
+        id,
+        status: "starting",
+        turn: 0,
+        lastCommandSeq: 0,
+        lastEventSeq: 0,
+      },
+      [
+        { version: 1, seq: 1, at: "a", type: "orphaned" },
+        { version: 1, seq: 2, at: "b", type: "liveness_recovered" },
       ],
     );
     expect(state).toMatchObject({ status: "waiting", lastEventSeq: 2 });

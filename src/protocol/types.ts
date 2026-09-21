@@ -81,6 +81,7 @@ export interface WorkerState {
   lastCommandSeq: number;
   lastEventSeq: number;
   lastEventAt?: string;
+  lastEventOffset?: number;
   error?: string;
 }
 export interface WorkerResult {
@@ -98,8 +99,11 @@ export interface WorkerResult {
   eventSeq: number;
   workspace?: WorkspaceMetadata;
 }
+export type CompletionKind = "turn" | "worker";
+
 export interface WorkerCompletion {
   version: 1;
+  kind?: CompletionKind;
   id: WorkerId;
   turn: number;
   commandSeq?: number;

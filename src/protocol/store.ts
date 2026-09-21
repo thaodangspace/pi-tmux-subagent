@@ -11,6 +11,7 @@ import {
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { createHash, randomUUID } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { SubagentError, workerId, type WorkerId } from "../types.js";
 import type {
   CompletionFeedEntry,
@@ -22,6 +23,15 @@ import type {
   WorkerResult,
   WorkerState,
 } from "./types.js";
+import { reduceEvents } from "./state.js";
+
+const lockStorage = new AsyncLocalStorage<Set<string>>();
+
+export function completionDedupKey(c: WorkerCompletion): string {
+  return c.kind === "worker"
+    ? `${c.id}:worker:${c.resultSeq}:${c.status}`
+    : `${c.id}:${c.turn}:${c.resultSeq}:${c.status}`;
+}
 
 export const DEFAULT_REGISTRY_ROOT = join(homedir(), ".pi", "tmux-subagents");
 export type LogName = "commands" | "events";
@@ -195,23 +205,13 @@ export class ProtocolStore {
     try {
       const feedPath = join(this.root, "completions.jsonl");
       const indexPath = join(this.root, "completions.index.json");
-      const targetKey = `${value.id}:${value.turn}:${value.resultSeq}:${value.status}`;
+      const keysDir = join(this.root, "completions.keys");
+      const targetKey = completionDedupKey(value);
+      const targetHash = createHash("sha256").update(targetKey).digest("hex");
+      const targetKeyPath = join(keysDir, targetHash.slice(0, 2), targetHash.slice(2));
 
-      let index: { offset: number; lastCursor: number; keys: string[] } | undefined;
-      try {
-        const raw = await readFile(indexPath, "utf8");
-        const parsed = JSON.parse(raw);
-        if (
-          typeof parsed.offset === "number" &&
-          typeof parsed.lastCursor === "number" &&
-          Array.isArray(parsed.keys)
-        ) {
-          index = parsed;
-        }
-      } catch {
-        /* index missing or invalid */
-      }
-
+      // Repair partial completion-feed tails before reading or appending
+      const lastCursor = await getLastSeqAndRepair(feedPath);
       let feedSize = 0;
       try {
         feedSize = (await stat(feedPath)).size;
@@ -219,15 +219,33 @@ export class ProtocolStore {
         if (error.code !== "ENOENT") throw error;
       }
 
+      let index: { offset: number; lastCursor: number } | undefined;
+      try {
+        const raw = await readFile(indexPath, "utf8");
+        const parsed = JSON.parse(raw);
+        if (
+          typeof parsed.offset === "number" &&
+          typeof parsed.lastCursor === "number"
+        ) {
+          index = { offset: parsed.offset, lastCursor: parsed.lastCursor };
+        }
+      } catch {
+        /* index missing or invalid */
+      }
+
       if (!index || feedSize < index.offset) {
-        const lastCursor = await getLastSeqAndRepair(feedPath);
+        await mkdir(keysDir, { recursive: true, mode: 0o700 });
         const allEntries = await this.readCompletionFeed();
+        for (const { completion: c } of allEntries) {
+          const k = completionDedupKey(c);
+          const h = createHash("sha256").update(k).digest("hex");
+          const kp = join(keysDir, h.slice(0, 2), h.slice(2));
+          await mkdir(dirname(kp), { recursive: true, mode: 0o700 });
+          await writeFile(kp, "", { flag: "w", mode: 0o600 });
+        }
         index = {
           offset: feedSize,
           lastCursor,
-          keys: allEntries.map(
-            ({ completion: c }) => `${c.id}:${c.turn}:${c.resultSeq}:${c.status}`,
-          ),
         };
       } else if (feedSize > index.offset) {
         const newRecords = await this.readCompletionFeedFrom(
@@ -236,13 +254,24 @@ export class ProtocolStore {
         );
         for (const { entry, endOffset } of newRecords) {
           const c = entry.completion;
-          index.keys.push(`${c.id}:${c.turn}:${c.resultSeq}:${c.status}`);
+          const k = completionDedupKey(c);
+          const h = createHash("sha256").update(k).digest("hex");
+          const kp = join(keysDir, h.slice(0, 2), h.slice(2));
+          await mkdir(dirname(kp), { recursive: true, mode: 0o700 });
+          await writeFile(kp, "", { flag: "w", mode: 0o600 });
           index.lastCursor = entry.cursor;
           index.offset = endOffset;
         }
       }
 
-      const existing = index.keys.includes(targetKey);
+      let existing = false;
+      try {
+        await stat(targetKeyPath);
+        existing = true;
+      } catch {
+        /* key does not exist */
+      }
+
       if (!existing) {
         let ownerSessionKey: string | null = ownerOverride ?? null;
         if (ownerOverride === undefined) {
@@ -271,9 +300,10 @@ export class ProtocolStore {
         } catch {
           /* ignore stat error */
         }
+        await mkdir(dirname(targetKeyPath), { recursive: true, mode: 0o700 });
+        await writeFile(targetKeyPath, "", { flag: "w", mode: 0o600 });
         index.lastCursor = cursor;
         index.offset = newSize;
-        index.keys.push(targetKey);
       }
       await atomicJson(indexPath, index);
       // The per-worker file is only a latest-completion cache. The feed above
@@ -616,6 +646,7 @@ export class ProtocolStore {
     name: LogName,
     fromSeq = 1,
     limit?: number,
+    byteOffset?: number,
   ): Promise<T[]> {
     if (!Number.isSafeInteger(fromSeq) || fromSeq < 1) {
       throw new SubagentError(
@@ -629,9 +660,11 @@ export class ProtocolStore {
         `Invalid limit: ${limit}. Expected a positive integer >= 1`,
       );
     }
-    let text: string;
+
+    const filePath = this.path(id, `${name}.jsonl`);
+    let handle;
     try {
-      text = await readFile(this.path(id, `${name}.jsonl`), "utf8");
+      handle = await open(filePath, "r");
     } catch (error: any) {
       if (error?.code === "ENOENT") {
         try {
@@ -648,35 +681,72 @@ export class ProtocolStore {
       }
       throw error;
     }
-    const lines = text.split("\n");
-    const output: T[] = [];
-    for (let index = 0; index < lines.length; index++) {
-      const line = lines[index]!;
-      if (!line) continue;
-      try {
-        const record = JSON.parse(line) as T;
-        if (record.seq >= fromSeq) {
-          output.push(record);
-          if (limit !== undefined && output.length >= limit) {
-            break;
+
+    try {
+      const stats = await handle.stat();
+      const fileSize = stats.size;
+
+      let startOffset = 0;
+      if (byteOffset !== undefined && byteOffset >= 0 && byteOffset <= fileSize) {
+        startOffset = byteOffset;
+      } else if (name === "events" && fromSeq > 1) {
+        try {
+          const cached = await this.readState(id);
+          if (
+            cached.lastEventSeq + 1 === fromSeq &&
+            typeof cached.lastEventOffset === "number" &&
+            cached.lastEventOffset <= fileSize
+          ) {
+            startOffset = cached.lastEventOffset;
           }
+        } catch {
+          // ignore
         }
-      } catch (error) {
-        if (index === lines.length - 1 && !text.endsWith("\n")) break;
-        throw new SubagentError(
-          "CORRUPT_LOG",
-          `Invalid ${name}.jsonl record ${index + 1}`,
-          error,
-        );
       }
+
+      if (startOffset >= fileSize) {
+        return [];
+      }
+
+      const readLen = fileSize - startOffset;
+      const buffer = Buffer.alloc(readLen);
+      await handle.read(buffer, 0, readLen, startOffset);
+      const text = buffer.toString("utf8");
+
+      const lines = text.split("\n");
+      const output: T[] = [];
+      for (let index = 0; index < lines.length; index++) {
+        const line = lines[index]!;
+        if (!line) continue;
+        try {
+          const record = JSON.parse(line) as T;
+          if (record.seq >= fromSeq) {
+            output.push(record);
+            if (limit !== undefined && output.length >= limit) {
+              break;
+            }
+          }
+        } catch (error) {
+          if (index === lines.length - 1 && !text.endsWith("\n")) break;
+          throw new SubagentError(
+            "CORRUPT_LOG",
+            `Invalid ${name}.jsonl record ${index + 1}`,
+            error,
+          );
+        }
+      }
+      for (let i = 0; i < output.length; i++) {
+        if (output[i]!.seq !== fromSeq + i) {
+          throw new SubagentError(
+            "INVALID_SEQUENCE",
+            `${name} sequence expected ${fromSeq + i}, got ${output[i]!.seq}`,
+          );
+        }
+      }
+      return output;
+    } finally {
+      await handle.close();
     }
-    for (let i = 0; i < output.length; i++)
-      if (output[i]!.seq !== fromSeq + i)
-        throw new SubagentError(
-          "INVALID_SEQUENCE",
-          `${name} sequence expected ${fromSeq + i}, got ${output[i]!.seq}`,
-        );
-    return output;
   }
   async appendCommand(
     id: WorkerId | string,
@@ -691,6 +761,74 @@ export class ProtocolStore {
     event: Omit<WorkerEvent, "version" | "seq" | "at">,
   ): Promise<WorkerEvent> {
     return this.append(id, "events", event) as Promise<WorkerEvent>;
+  }
+  async withWorkerLock<T>(
+    id: WorkerId | string,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const lock = this.path(id, ".worker.lock");
+    const held = lockStorage.getStore();
+    if (held?.has(lock)) {
+      return await fn();
+    }
+    await this.acquire(lock);
+    const nextHeld = new Set(held);
+    nextHeld.add(lock);
+    return await lockStorage.run(nextHeld, async () => {
+      try {
+        return await fn();
+      } finally {
+        await rm(lock, { recursive: true, force: true });
+      }
+    });
+  }
+  async appendEventAndProjectState(
+    id: WorkerId | string,
+    value: Omit<WorkerEvent, "version" | "seq" | "at">,
+  ): Promise<{ event: WorkerEvent; state: WorkerState }> {
+    return this.withWorkerLock(id, async () => {
+      const filePath = this.path(id, "events.jsonl");
+      const lastSeq = await getLastSeqAndRepair(filePath);
+      const record: WorkerEvent = {
+        version: 1,
+        seq: lastSeq + 1,
+        at: new Date().toISOString(),
+        ...value,
+      };
+      await appendFile(filePath, `${JSON.stringify(record)}\n`, {
+        encoding: "utf8",
+        flag: "a",
+      });
+      const endOffset = (await stat(filePath)).size;
+
+      let cached: WorkerState;
+      try {
+        cached = await this.readState(id);
+      } catch {
+        cached = {
+          version: 1,
+          id: workerId(String(id)),
+          status: "starting",
+          turn: 0,
+          lastCommandSeq: 0,
+          lastEventSeq: 0,
+        };
+      }
+
+      const unseenEvents = await this.readLog<WorkerEvent>(
+        id,
+        "events",
+        cached.lastEventSeq + 1,
+        undefined,
+        cached.lastEventOffset,
+      );
+
+      const nextState = reduceEvents(cached, unseenEvents);
+      nextState.lastEventOffset = endOffset;
+      await this.writeState(nextState);
+
+      return { event: record, state: nextState };
+    });
   }
   private async append(
     id: WorkerId | string,
@@ -719,7 +857,7 @@ export class ProtocolStore {
   }
   private async acquire(lock: string): Promise<void> {
     const ownerFile = join(lock, "owner.json");
-    for (let attempt = 0; attempt < 100; attempt++) {
+    for (let attempt = 0; attempt < 300; attempt++) {
       try {
         await mkdir(lock);
         try {
@@ -736,20 +874,26 @@ export class ProtocolStore {
         if (error.code !== "EEXIST") throw error;
         try {
           let isStale = false;
+          let validPid = false;
           try {
             const raw = await readFile(ownerFile, "utf8");
             const data = JSON.parse(raw);
             if (typeof data.pid === "number") {
               try {
                 process.kill(data.pid, 0);
-              } catch {
-                isStale = true;
+                validPid = true;
+              } catch (killErr: any) {
+                if (killErr.code === "EPERM") {
+                  validPid = true;
+                } else {
+                  isStale = true;
+                }
               }
             }
           } catch {
             /* ownerFile missing or unreadable */
           }
-          if (!isStale) {
+          if (!isStale && !validPid) {
             if (Date.now() - (await stat(lock)).mtimeMs > 10_000) {
               isStale = true;
             }

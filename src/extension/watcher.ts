@@ -56,7 +56,8 @@ export class ActivityWatcher {
         (view) =>
           view.status === "running" ||
           view.status === "waiting" ||
-          view.status === "failed",
+          view.status === "failed" ||
+          view.status === "unresponsive",
       );
       const next = meaningfulFingerprint(views);
       if (next !== this.fingerprint) {
