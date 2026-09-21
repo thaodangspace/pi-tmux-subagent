@@ -30,7 +30,7 @@ describe("activity watcher", () => {
           cwd: "/tmp",
           launch: { task: "x" },
         })),
-        readLog: vi.fn(async (_id: string, name: string) =>
+        readLogTail: vi.fn(async (_id: string, name: string) =>
           name === "events"
             ? [
                 {

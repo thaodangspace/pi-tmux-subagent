@@ -89,8 +89,12 @@ export async function loadWorkerViews(
       )
         return undefined;
       const [events, commands, result] = await Promise.all([
-        manager.store.readLog<WorkerEvent>(id, "events").catch(() => []),
-        manager.store.readLog<WorkerCommand>(id, "commands").catch(() => []),
+        manager.store
+          .readLogTail<WorkerEvent>(id, "events", 20)
+          .catch(() => []),
+        manager.store
+          .readLogTail<WorkerCommand>(id, "commands", 20)
+          .catch(() => []),
         manager.store.readResult(id).catch(() => undefined),
       ]);
       return projectWorker(

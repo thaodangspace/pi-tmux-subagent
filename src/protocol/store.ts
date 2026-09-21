@@ -123,6 +123,7 @@ async function getLastSeqAndRepair(filePath: string): Promise<number> {
 }
 
 export class ProtocolStore {
+  private readonly completionOffsets = new Map<string, number>();
   constructor(readonly root = DEFAULT_REGISTRY_ROOT) {}
   dir(id: WorkerId | string): string {
     return join(this.root, workerId(String(id)));
@@ -233,15 +234,49 @@ export class ProtocolStore {
 
   async completions(query: CompletionQuery): Promise<CompletionFeedEntry[]> {
     this.consumerPath(query.consumer, query.ownerSessionKey);
-    const after =
-      query.after === undefined
-        ? await this.readCompletionCursor(query.consumer, query.ownerSessionKey)
-        : this.validCursor(query.after);
-    return (await this.readCompletionFeed()).filter(
-      (entry) =>
-        entry.cursor > after &&
-        entry.ownerSessionKey === query.ownerSessionKey,
+    if (query.after !== undefined) {
+      const after = this.validCursor(query.after);
+      return (await this.readCompletionFeed()).filter(
+        (entry) =>
+          entry.cursor > after &&
+          entry.ownerSessionKey === query.ownerSessionKey,
+      );
+    }
+
+    const checkpoint = await this.readCompletionCheckpoint(
+      query.consumer,
+      query.ownerSessionKey,
     );
+    const scanned = await this.readCompletionFeedFrom(
+      checkpoint.offset,
+      checkpoint.offset === 0 ? 0 : checkpoint.cursor,
+    );
+    // Legacy checkpoints did not contain byte offsets. They migrate after one
+    // full scan while retaining the already acknowledged cursor.
+    const records = scanned.filter(
+      ({ entry }) => entry.cursor > checkpoint.cursor,
+    );
+    const owned = records.filter(
+      ({ entry }) => entry.ownerSessionKey === query.ownerSessionKey,
+    );
+    for (const record of owned) {
+      this.completionOffsets.set(
+        `${query.ownerSessionKey}:${record.entry.cursor}`,
+        record.endOffset,
+      );
+    }
+    // Entries belonging only to other owners are safe to skip durably. This
+    // keeps an idle owner's polling cost bounded even on a busy shared feed.
+    if (!owned.length && records.length) {
+      const last = records.at(-1)!;
+      await this.writeCompletionCheckpoint(
+        query.consumer,
+        query.ownerSessionKey,
+        last.entry.cursor,
+        last.endOffset,
+      );
+    }
+    return owned.map(({ entry }) => entry);
   }
 
   async ackCompletion(
@@ -255,28 +290,81 @@ export class ProtocolStore {
     await mkdir(dirname(cursorPath), { recursive: true, mode: 0o700 });
     await this.acquire(lock);
     try {
-      const entries = await this.readCompletionFeed();
-      const entry = entries.find((candidate) => candidate.cursor === value);
-      if (!entry || entry.ownerSessionKey !== ownerSessionKey) {
+      let offset = this.completionOffsets.get(`${ownerSessionKey}:${value}`);
+      let entry: CompletionFeedEntry | undefined;
+      if (offset === undefined) {
+        const records = await this.readCompletionFeedFrom(0, 0);
+        const record = records.find(({ entry }) => entry.cursor === value);
+        entry = record?.entry;
+        offset = record?.endOffset;
+      } else {
+        entry = { ownerSessionKey } as CompletionFeedEntry;
+      }
+      if (!entry || entry.ownerSessionKey !== ownerSessionKey || offset === undefined) {
         throw new SubagentError(
           "INVALID_COMPLETION_CURSOR",
           `Completion cursor ${value} has not been published for this owner`,
         );
       }
-      const current = await this.readCompletionCursor(
+      const current = await this.readCompletionCheckpoint(
         consumer,
         ownerSessionKey,
       );
-      if (value > current) {
-        await atomicJson(cursorPath, {
-          version: 1,
+      if (value > current.cursor) {
+        await this.writeCompletionCheckpoint(
           consumer,
           ownerSessionKey,
-          cursor: value,
-        });
+          value,
+          offset,
+        );
       }
     } finally {
       await rm(lock, { recursive: true, force: true });
+    }
+  }
+
+  private async readCompletionFeedFrom(
+    offset: number,
+    afterCursor: number,
+  ): Promise<Array<{ entry: CompletionFeedEntry; endOffset: number }>> {
+    const path = join(this.root, "completions.jsonl");
+    let handle;
+    try {
+      handle = await open(path, "r");
+    } catch (error: any) {
+      if (error.code === "ENOENT") return [];
+      throw error;
+    }
+    try {
+      const size = (await handle.stat()).size;
+      if (offset > size) return this.readCompletionFeedFrom(0, 0);
+      const buffer = Buffer.alloc(size - offset);
+      await handle.read(buffer, 0, buffer.length, offset);
+      const records: Array<{ entry: CompletionFeedEntry; endOffset: number }> = [];
+      let start = 0;
+      let expected = afterCursor + 1;
+      for (let index = 0; index < buffer.length; index++) {
+        if (buffer[index] !== 0x0a) continue;
+        const line = buffer.subarray(start, index).toString("utf8");
+        start = index + 1;
+        if (!line) continue;
+        try {
+          const parsed = JSON.parse(line) as CompletionFeedEntry;
+          if (parsed.cursor !== expected || !parsed.completion)
+            throw new Error("invalid cursor");
+          const entry = {
+            ...parsed,
+            ownerSessionKey: parsed.ownerSessionKey ?? null,
+          };
+          records.push({ entry, endOffset: offset + start });
+          expected++;
+        } catch (error) {
+          throw new SubagentError("CORRUPT_LOG", "Invalid completions.jsonl record", error);
+        }
+      }
+      return records;
+    } finally {
+      await handle.close();
     }
   }
 
@@ -346,19 +434,42 @@ export class ProtocolStore {
     return cursor;
   }
 
-  private async readCompletionCursor(
+  private async readCompletionCheckpoint(
     consumer: string,
     ownerSessionKey: string,
-  ): Promise<number> {
+  ): Promise<{ cursor: number; offset: number }> {
     try {
       const checkpoint = JSON.parse(
         await readFile(this.consumerPath(consumer, ownerSessionKey), "utf8"),
-      ) as { cursor: number };
-      return this.validCursor(checkpoint.cursor);
+      ) as { cursor: number; offset?: number };
+      return {
+        cursor: this.validCursor(checkpoint.cursor),
+        offset:
+          checkpoint.offset !== undefined &&
+          Number.isSafeInteger(checkpoint.offset) &&
+          checkpoint.offset >= 0
+            ? checkpoint.offset
+            : 0,
+      };
     } catch (error: any) {
-      if (error.code === "ENOENT") return 0;
+      if (error.code === "ENOENT") return { cursor: 0, offset: 0 };
       throw error;
     }
+  }
+
+  private async writeCompletionCheckpoint(
+    consumer: string,
+    ownerSessionKey: string,
+    cursor: number,
+    offset: number,
+  ): Promise<void> {
+    await atomicJson(this.consumerPath(consumer, ownerSessionKey), {
+      version: 1,
+      consumer,
+      ownerSessionKey,
+      cursor,
+      offset,
+    });
   }
   async readMeta(id: WorkerId | string): Promise<WorkerMeta> {
     return this.readJson(id, "meta.json");
@@ -421,6 +532,33 @@ export class ProtocolStore {
   private async readJson<T>(id: WorkerId | string, file: string): Promise<T> {
     return JSON.parse(await readFile(this.path(id, file), "utf8")) as T;
   }
+  async readLogTail<T extends { seq: number }>(
+    id: WorkerId | string,
+    name: LogName,
+    limit = 20,
+    maxBytes = 64 * 1024,
+  ): Promise<T[]> {
+    if (!Number.isSafeInteger(limit) || limit < 1)
+      throw new SubagentError("INVALID_ARGUMENT", "Tail limit must be positive");
+    const path = this.path(id, `${name}.jsonl`);
+    const handle = await open(path, "r");
+    try {
+      const size = (await handle.stat()).size;
+      const start = Math.max(0, size - maxBytes);
+      const buffer = Buffer.alloc(size - start);
+      await handle.read(buffer, 0, buffer.length, start);
+      let text = buffer.toString("utf8");
+      if (start > 0) text = text.slice(text.indexOf("\n") + 1);
+      return text
+        .split("\n")
+        .filter(Boolean)
+        .slice(-limit)
+        .map((line) => JSON.parse(line) as T);
+    } finally {
+      await handle.close();
+    }
+  }
+
   async readLog<T extends { seq: number }>(
     id: WorkerId | string,
     name: LogName,

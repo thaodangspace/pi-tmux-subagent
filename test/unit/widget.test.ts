@@ -83,13 +83,13 @@ describe("subagents widget", () => {
             root: id === "local" ? "/repo" : "/other",
           },
         })),
-        readLog: vi.fn(async () => []),
+        readLogTail: vi.fn(async () => []),
         readResult: vi.fn(async () => undefined),
       },
     };
     const views = await loadWorkerViews(manager as any, Date.now(), "/repo");
     expect(views.map((view) => view.id)).toEqual(["local"]);
-    expect(manager.store.readLog).toHaveBeenCalledTimes(2);
+    expect(manager.store.readLogTail).toHaveBeenCalledTimes(2);
   });
   it("is a no-op without a UI and registers below the editor otherwise", () => {
     const setWidget = vi.fn();

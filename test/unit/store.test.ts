@@ -139,6 +139,16 @@ describe("protocol store", () => {
     ).toMatchObject({ status: "failed", summary: "RPC exited", resultSeq: 9 });
   });
 
+  it("reads a bounded log tail without changing historical pagination", async () => {
+    const { store, id } = await fixture();
+    for (let i = 1; i <= 100; i++) {
+      await store.appendEvent(id, { type: "event", data: "x".repeat(100) });
+    }
+    const tail = await store.readLogTail<any>(id, "events", 5, 2_000);
+    expect(tail.map((event) => event.seq)).toEqual([96, 97, 98, 99, 100]);
+    expect((await store.readLog<any>(id, "events", 1, 2)).map((event) => event.seq)).toEqual([1, 2]);
+  });
+
   it("supports reading log with fromSeq cursor", async () => {
     const { store, id } = await fixture();
     for (let i = 1; i <= 5; i++) {

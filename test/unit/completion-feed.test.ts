@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { Manager } from "../../src/manager/manager.js";
 import { ProtocolStore } from "../../src/protocol/store.js";
 import type { WorkerCompletion } from "../../src/protocol/types.js";
@@ -115,6 +115,37 @@ describe("durable completion feed", () => {
         .filter((entry) => entry.completion.id === "worker-one")
         .map((entry) => entry.completion.turn),
     ).toEqual([1, 2]);
+  });
+
+  it("resumes polling from a durable byte offset instead of reparsing history", async () => {
+    const { root, store } = await fixture();
+    for (let turn = 1; turn <= 40; turn++) {
+      await store.writeCompletion(completion("worker-one", turn));
+    }
+    const first = await store.completions({
+      consumer: "incremental",
+      ownerSessionKey: "session-a",
+    });
+    for (const entry of first) {
+      await store.ackCompletion(
+        "incremental",
+        "session-a",
+        entry.cursor,
+      );
+    }
+    await store.writeCompletion(completion("worker-one", 41));
+
+    const restarted = new ProtocolStore(root);
+    const incremental = vi.spyOn(restarted as any, "readCompletionFeedFrom");
+    const full = vi.spyOn(restarted as any, "readCompletionFeed");
+    const next = await restarted.completions({
+      consumer: "incremental",
+      ownerSessionKey: "session-a",
+    });
+    expect(next.map((entry) => entry.completion.turn)).toEqual([41]);
+    expect(incremental).toHaveBeenCalledWith(expect.any(Number), 40);
+    expect(incremental.mock.calls[0]![0]).toBeGreaterThan(0);
+    expect(full).not.toHaveBeenCalled();
   });
 
   it("deduplicates producer retries and keeps independent consumer cursors", async () => {

@@ -30,7 +30,7 @@ function setup(action: string, message = "do it") {
     delete: vi.fn(async () => undefined),
     store: {
       readMeta: vi.fn(async () => meta),
-      readLog: vi.fn(async () => []),
+      readLogTail: vi.fn(async () => []),
       readResult: vi.fn(async () => undefined),
     },
   };
