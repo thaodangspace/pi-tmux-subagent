@@ -28,6 +28,7 @@ export interface ActiveModelSelection {
 }
 export interface LaunchConfig {
   task: string;
+  agent?: string;
   name?: string;
   provider?: string;
   model?: string;

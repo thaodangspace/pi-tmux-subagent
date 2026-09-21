@@ -3,6 +3,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Manager } from "../manager/manager.js";
 import { resolveLaunch } from "../agents/discover.js";
+import { formatWorkerIdentity } from "./projection.js";
 
 const subagentSchema = Type.Object({
   action: StringEnum([
@@ -77,8 +78,15 @@ export function registerSubagentTool(
     parameters: subagentSchema,
     async execute(_id, input, signal, onUpdate, ctx) {
       signal?.throwIfAborted();
+      const progressText =
+        input.action === "spawn"
+          ? (() => {
+              const identity = formatWorkerIdentity(input);
+              return identity ? `spawn ${identity}…` : "spawn…";
+            })()
+          : `${input.action}…`;
       onUpdate?.({
-        content: [{ type: "text", text: `${input.action}…` }],
+        content: [{ type: "text", text: progressText }],
         details: {},
       });
       let value: unknown;

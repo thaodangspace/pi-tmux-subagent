@@ -226,6 +226,7 @@ export async function resolveLaunch(
       );
     base = {
       ...base,
+      agent: found.name,
       name: found.name,
       systemPrompt: found.systemPrompt,
       maxDepth: found.spawning ? (found.maxDepth ?? parentMaxDepth) : 0,
@@ -237,10 +238,14 @@ export async function resolveLaunch(
     };
   }
   const config = await loadAgentConfig(cwd);
+  const { agent: _overrideAgent, ...safeOverrides } = overrides;
   const launch = Object.fromEntries(
-    Object.entries({ ...base, task, ...overrides }).filter(
-      ([, value]) => value !== undefined,
-    ),
+    Object.entries({
+      ...base,
+      task,
+      ...safeOverrides,
+      ...(base.agent ? { agent: base.agent } : {}),
+    }).filter(([, value]) => value !== undefined),
   ) as unknown as LaunchConfig;
   if (!launch.model && !launch.provider && config?.default) {
     launch.provider = config.default.provider;

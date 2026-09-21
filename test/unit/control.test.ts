@@ -94,4 +94,73 @@ describe("subagent controls", () => {
     expect(ctx.ui.select).not.toHaveBeenCalled();
     expect(ctx.ui.notify).toHaveBeenCalledWith("worker-1  waiting", "info");
   });
+
+  it("distinguishes worker name, agent definition, and model in subagents control view", async () => {
+    const state = {
+      version: 1 as const,
+      id: workerId("worker-identity-test"),
+      status: "running" as const,
+      turn: 1,
+      lastCommandSeq: 1,
+      lastEventSeq: 1,
+    };
+    const meta = {
+      version: 1 as const,
+      id: workerId("worker-identity-test"),
+      tmuxSession: "pi-sa-worker-identity-test",
+      createdAt: "2026-01-01T00:00:00Z",
+      cwd: "/repo",
+      launch: {
+        task: "audit auth",
+        agent: "reviewer",
+        name: "auth-review",
+        provider: "openai-codex",
+        model: "gpt-5.6-sol",
+        thinking: "high",
+      },
+    };
+    const manager = {
+      list: vi.fn(async () => [state]),
+      status: vi.fn(async () => state),
+      result: vi.fn(async () => undefined),
+      store: {
+        readMeta: vi.fn(async () => meta),
+        readLogTail: vi.fn(async () => []),
+        readResult: vi.fn(async () => undefined),
+      },
+    };
+    const select = vi
+      .fn()
+      .mockResolvedValueOnce(
+        "auth-review [reviewer]  running  turn 1  openai-codex/gpt-5.6-sol-high",
+      )
+      .mockResolvedValueOnce("Close");
+    const ctx = {
+      hasUI: true,
+      mode: "tui",
+      cwd: "/repo",
+      ui: {
+        select,
+        input: vi.fn(),
+        confirm: vi.fn(),
+        notify: vi.fn(),
+      },
+    };
+
+    await openSubagentsControl(manager as any, ctx as any);
+    // Selector option
+    expect(select).toHaveBeenNthCalledWith(
+      1,
+      "Select a subagent",
+      expect.arrayContaining([
+        "auth-review [reviewer]  running  turn 1  openai-codex/gpt-5.6-sol-high",
+      ]),
+    );
+    // Action dialog detail header
+    const detailDialogArg = select.mock.calls[1][0];
+    expect(detailDialogArg).toContain("worker: auth-review");
+    expect(detailDialogArg).toContain("agent: reviewer");
+    expect(detailDialogArg).toContain("model: openai-codex/gpt-5.6-sol-high");
+    expect(detailDialogArg).toContain("status: running · turn 1");
+  });
 });

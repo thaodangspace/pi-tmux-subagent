@@ -152,3 +152,52 @@ it("resolves thinking configuration from agent frontmatter and allows overrides"
   });
   expect(overridden.thinking).toBe("max");
 });
+
+describe("agent definition identity separation", () => {
+  it("persists agent definition identity and uses it as default display name", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agents-identity-"));
+    roots.push(root);
+    await mkdir(join(root, ".pi/agents"), { recursive: true });
+    await writeFile(
+      join(root, ".pi/agents/reviewer.md"),
+      "---\nname: reviewer\n---\nReview carefully.",
+    );
+
+    const resolved = await resolveLaunch(root, "review auth", "reviewer");
+    expect(resolved.agent).toBe("reviewer");
+    expect(resolved.name).toBe("reviewer");
+    expect(resolved.task).toBe("review auth");
+  });
+
+  it("overrides only display name and preserves agent definition when explicit name is supplied", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agents-override-"));
+    roots.push(root);
+    await mkdir(join(root, ".pi/agents"), { recursive: true });
+    await writeFile(
+      join(root, ".pi/agents/reviewer.md"),
+      "---\nname: reviewer\n---\nReview carefully.",
+    );
+
+    const overridden = await resolveLaunch(root, "review auth", "reviewer", {
+      name: "auth-review",
+      agent: "tampered",
+    } as any);
+    expect(overridden.agent).toBe("reviewer");
+    expect(overridden.name).toBe("auth-review");
+  });
+
+  it("supports unnamed and custom workers without an agent definition", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agents-custom-"));
+    roots.push(root);
+
+    const unnamed = await resolveLaunch(root, "do task");
+    expect(unnamed.agent).toBeUndefined();
+    expect(unnamed.name).toBeUndefined();
+
+    const custom = await resolveLaunch(root, "do custom", undefined, {
+      name: "custom-worker",
+    });
+    expect(custom.agent).toBeUndefined();
+    expect(custom.name).toBe("custom-worker");
+  });
+});

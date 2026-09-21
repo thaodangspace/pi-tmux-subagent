@@ -2,7 +2,11 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { resolve } from "node:path";
 import type { Manager } from "../manager/manager.js";
 import type { WorkerCommand, WorkerEvent } from "../protocol/types.js";
-import { projectWorker, type WorkerActivityView } from "./projection.js";
+import {
+  formatWorkerIdentity,
+  projectWorker,
+  type WorkerActivityView,
+} from "./projection.js";
 
 export const SUBAGENTS_WIDGET_ID = "tmux-subagents";
 
@@ -47,8 +51,8 @@ export function renderSubagentsWidget(
   if (!workers.length) return [top, `│${pad("  no agents", inside)}│`, bottom];
 
   const nameWidth = Math.min(
-    18,
-    Math.max(8, ...workers.map((worker) => (worker.name || worker.id).length)),
+    24,
+    Math.max(8, ...workers.map((worker) => formatWorkerIdentity(worker).length)),
   );
   const statusWidth = Math.min(
     10,
@@ -63,7 +67,7 @@ export function renderSubagentsWidget(
   const detailWidth = inside - fixedWidth;
 
   const rows = workers.map((worker) => {
-    const name = worker.name || worker.id;
+    const name = formatWorkerIdentity(worker);
     const compact = `  ${name}  ${worker.status}`;
     if (detailWidth < 5) return `│${pad(compact, inside)}│`;
     const content = `  ${pad(name, nameWidth)}  ${pad(worker.status, statusWidth)}  ${pad(detail(worker), detailWidth)}  ${elapsed(worker.elapsedMs)}  `;

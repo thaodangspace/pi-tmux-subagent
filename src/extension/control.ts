@@ -1,6 +1,7 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { Manager } from "../manager/manager.js";
 import { inspectWorker } from "./inspection.js";
+import { formatWorkerIdentity } from "./projection.js";
 import { loadWorkerViews } from "./widget.js";
 
 export async function openSubagentsControl(
@@ -30,7 +31,7 @@ export async function openSubagentsControl(
     }
     const labels = views.map(
       (view) =>
-        `${view.name ?? view.id}  ${view.status}  turn ${view.turn}${view.modelLabel ? `  ${view.modelLabel}` : ""}`,
+        `${formatWorkerIdentity(view)}  ${view.status}  turn ${view.turn}${view.modelLabel ? `  ${view.modelLabel}` : ""}`,
     );
     const selectedLabel = await ctx.ui.select("Select a subagent", labels);
     if (!selectedLabel) return;
@@ -48,9 +49,11 @@ export async function openSubagentsControl(
       manager.result(selected.id),
     ]);
     const detail = [
-      `${meta.launch.name ?? selected.id} (${selected.id})`,
-      `status: ${state.status} · turn ${state.turn}`,
+      `worker: ${meta.launch.name ?? selected.id}`,
+      meta.launch.agent ? `agent: ${meta.launch.agent}` : undefined,
       selected.modelLabel ? `model: ${selected.modelLabel}` : undefined,
+      `status: ${state.status} · turn ${state.turn}`,
+      `id: ${selected.id}`,
       `cwd: ${meta.cwd}`,
       selected.latestActivity
         ? `activity: ${selected.latestActivity}`

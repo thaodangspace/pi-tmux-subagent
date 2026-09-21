@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -222,6 +222,144 @@ describe("subagent tool registration and execution", () => {
       message: expect.stringContaining(
         "No result available for worker: running1",
       ),
+    });
+  });
+
+  it("emits transient tool progress updates identifying selected agent", async () => {
+    const { root, manager, tool } = await setupTool();
+    await mkdir(join(root, ".pi/agents"), { recursive: true });
+    await writeFile(
+      join(root, ".pi/agents/reviewer.md"),
+      "---\nname: reviewer\n---\nReview code.",
+    );
+
+    manager.spawn = vi.fn(async (config: any) => ({
+      version: 1 as const,
+      id: workerId("worker-spawned"),
+      status: "starting" as const,
+      turn: 0,
+      lastCommandSeq: 0,
+      lastEventSeq: 0,
+    }));
+
+    const ctx = {
+      cwd: root,
+      sessionManager: { getSessionId: () => "session-1" },
+    };
+
+    // Case 1: spawn with agent only
+    const onUpdate1 = vi.fn();
+    await tool.execute(
+      "c1",
+      { action: "spawn", agent: "reviewer", task: "review PR" },
+      undefined,
+      onUpdate1,
+      ctx,
+    );
+    expect(onUpdate1).toHaveBeenCalledWith({
+      content: [{ type: "text", text: "spawn reviewer…" }],
+      details: {},
+    });
+    expect(manager.spawn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent: "reviewer",
+        name: "reviewer",
+        task: "review PR",
+      }),
+      root,
+      undefined,
+      "session-1",
+    );
+
+    // Case 2: spawn with agent and distinct custom name
+    const onUpdate2 = vi.fn();
+    await tool.execute(
+      "c2",
+      {
+        action: "spawn",
+        agent: "reviewer",
+        name: "auth-review",
+        task: "review auth",
+      },
+      undefined,
+      onUpdate2,
+      ctx,
+    );
+    expect(onUpdate2).toHaveBeenCalledWith({
+      content: [{ type: "text", text: "spawn auth-review [reviewer]…" }],
+      details: {},
+    });
+    expect(manager.spawn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent: "reviewer",
+        name: "auth-review",
+        task: "review auth",
+      }),
+      root,
+      undefined,
+      "session-1",
+    );
+
+    // Case 3: spawn with agent and same name
+    const onUpdate3 = vi.fn();
+    await tool.execute(
+      "c3",
+      {
+        action: "spawn",
+        agent: "reviewer",
+        name: "reviewer",
+        task: "review auth",
+      },
+      undefined,
+      onUpdate3,
+      ctx,
+    );
+    expect(onUpdate3).toHaveBeenCalledWith({
+      content: [{ type: "text", text: "spawn reviewer…" }],
+      details: {},
+    });
+
+    // Case 4: spawn with custom name only (unnamed agent)
+    const onUpdate4 = vi.fn();
+    await tool.execute(
+      "c4",
+      { action: "spawn", name: "custom-job", task: "custom task" },
+      undefined,
+      onUpdate4,
+      ctx,
+    );
+    expect(onUpdate4).toHaveBeenCalledWith({
+      content: [{ type: "text", text: "spawn custom-job…" }],
+      details: {},
+    });
+
+    // Case 5: spawn without name or agent
+    const onUpdate5 = vi.fn();
+    await tool.execute(
+      "c5",
+      { action: "spawn", task: "plain task" },
+      undefined,
+      onUpdate5,
+      ctx,
+    );
+    expect(onUpdate5).toHaveBeenCalledWith({
+      content: [{ type: "text", text: "spawn…" }],
+      details: {},
+    });
+
+    // Case 6: non-spawn action keeps standard update
+    manager.stop = vi.fn(async () => 1);
+    const onUpdate6 = vi.fn();
+    await tool.execute(
+      "c6",
+      { action: "stop", id: "worker-1" },
+      undefined,
+      onUpdate6,
+      ctx,
+    );
+    expect(onUpdate6).toHaveBeenCalledWith({
+      content: [{ type: "text", text: "stop…" }],
+      details: {},
     });
   });
 });

@@ -59,4 +59,46 @@ describe("worker inspection", () => {
     expect(output.match(/^2026-.*\[tool\]/gm)).toHaveLength(3);
     expect(output).not.toContain("tool-8");
   });
+
+  it("distinguishes worker name, agent definition, runtime model, and status", async () => {
+    const id = workerId("worker-inspect-1");
+    const state = {
+      version: 1 as const,
+      id,
+      status: "running" as const,
+      turn: 1,
+      lastCommandSeq: 1,
+      lastEventSeq: 1,
+    };
+    const meta = {
+      version: 1 as const,
+      id,
+      tmuxSession: "pi-sa-worker-inspect-1",
+      createdAt: "2026-01-01T00:00:00Z",
+      cwd: "/repo",
+      launch: {
+        task: "review",
+        agent: "reviewer",
+        name: "auth-review",
+        provider: "openai-codex",
+        model: "gpt-5.6-sol",
+        thinking: "high",
+      },
+    };
+    const manager = {
+      status: async () => state,
+      result: async () => undefined,
+      store: {
+        readMeta: async () => meta,
+        readLog: async () => [],
+      },
+    };
+
+    const output = await inspectWorker(manager as any, id);
+    expect(output).toContain("worker: auth-review");
+    expect(output).toContain("agent: reviewer");
+    expect(output).toContain("model: openai-codex/gpt-5.6-sol-high");
+    expect(output).toContain("status: running · turn 1");
+    expect(output).toContain(`id: ${id}`);
+  });
 });

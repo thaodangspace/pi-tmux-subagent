@@ -23,8 +23,11 @@ export async function inspectWorker(
   };
   const view = projectWorker(input);
   const lines = [
-    `${meta.launch.name ?? id} (${id})`,
+    `worker: ${meta.launch.name ?? id}`,
+    meta.launch.agent ? `agent: ${meta.launch.agent}` : undefined,
+    view.modelLabel ? `model: ${view.modelLabel}` : undefined,
     `status: ${state.status} · turn ${state.turn}`,
+    `id: ${id}`,
     `cwd: ${meta.cwd}`,
     meta.workspace?.branch ? `branch: ${meta.workspace.branch}` : undefined,
     meta.workspace?.worktree

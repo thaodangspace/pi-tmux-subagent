@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   eventActivity,
+  formatWorkerIdentity,
   modelSelectionLabel,
   projectWorker,
   recentActivity,
@@ -121,5 +122,83 @@ describe("worker activity projection", () => {
       "command",
       "assistant",
     ]);
+  });
+
+  it("reads agent from meta.launch.agent and preserves undefined for legacy metadata", () => {
+    const withAgent = projectWorker({
+      state: state(),
+      meta: {
+        version: 1,
+        id: workerId("worker-1"),
+        tmuxSession: "pi-sa-worker-1",
+        createdAt: "2026-01-01T00:00:00Z",
+        cwd: "/tmp",
+        launch: { task: "task", agent: "reviewer", name: "auth-review" },
+      },
+    });
+    expect(withAgent.agent).toBe("reviewer");
+    expect(withAgent.name).toBe("auth-review");
+
+    const legacy = projectWorker({
+      state: state(),
+      meta: {
+        version: 1,
+        id: workerId("worker-1"),
+        tmuxSession: "pi-sa-worker-1",
+        createdAt: "2026-01-01T00:00:00Z",
+        cwd: "/tmp",
+        launch: { task: "task", name: "legacy-worker" },
+      },
+    });
+    expect(legacy.agent).toBeUndefined();
+    expect(legacy.name).toBe("legacy-worker");
+  });
+
+  describe("formatWorkerIdentity", () => {
+    it("renders name [agent] when name and agent differ", () => {
+      expect(
+        formatWorkerIdentity({
+          name: "auth-review",
+          agent: "reviewer",
+          id: "w-1",
+        }),
+      ).toBe("auth-review [reviewer]");
+    });
+
+    it("renders single label when name and agent are identical", () => {
+      expect(
+        formatWorkerIdentity({
+          name: "reviewer",
+          agent: "reviewer",
+          id: "w-1",
+        }),
+      ).toBe("reviewer");
+    });
+
+    it("renders agent name when explicit name is absent but agent exists", () => {
+      expect(
+        formatWorkerIdentity({
+          agent: "reviewer",
+          id: "w-1",
+        }),
+      ).toBe("reviewer");
+    });
+
+    it("renders worker name when agent is absent", () => {
+      expect(
+        formatWorkerIdentity({
+          name: "custom-worker",
+          id: "w-1",
+        }),
+      ).toBe("custom-worker");
+    });
+
+    it("falls back to worker id when neither name nor agent is present", () => {
+      expect(
+        formatWorkerIdentity({
+          id: "w-1",
+        }),
+      ).toBe("w-1");
+    });
   });
 });

@@ -15,6 +15,7 @@ export interface ActivityView {
 }
 export interface WorkerActivityView {
   id: string;
+  agent?: string;
   name?: string;
   provider?: string;
   model?: string;
@@ -27,6 +28,19 @@ export interface WorkerActivityView {
   elapsedMs?: number;
   latestActivity?: string;
   latestActivityKind?: ActivityKind;
+}
+
+export function formatWorkerIdentity(worker: {
+  name?: string;
+  agent?: string;
+  id?: string;
+}): string {
+  if (worker.name && worker.agent) {
+    return worker.name !== worker.agent
+      ? `${worker.name} [${worker.agent}]`
+      : worker.name;
+  }
+  return worker.name ?? worker.agent ?? worker.id ?? "";
 }
 export interface WorkerProjectionInput {
   state: WorkerState;
@@ -172,6 +186,7 @@ export function projectWorker(
   const updatedAt = latest?.at ?? state.lastEventAt ?? startedAt;
   return {
     id: state.id,
+    ...(meta?.launch.agent ? { agent: meta.launch.agent } : {}),
     ...(meta?.launch.name ? { name: meta.launch.name } : {}),
     ...(selection?.provider ? { provider: selection.provider } : {}),
     ...(selection?.model ? { model: selection.model } : {}),

@@ -102,4 +102,93 @@ describe("subagents widget", () => {
       { placement: "belowEditor" },
     );
   });
+
+  it("renders distinct name [agent] when name and agent differ", () => {
+    const lines = renderSubagentsWidget(
+      [
+        {
+          id: "worker-1",
+          name: "auth-review",
+          agent: "reviewer",
+          status: "running",
+          turn: 1,
+          elapsedMs: 34_000,
+          latestActivity: "[tool] grep auth.ts",
+          latestActivityKind: "tool",
+        },
+      ],
+      80,
+    );
+    expect(lines[1]).toContain("auth-review [reviewer]");
+    expect(lines[1]).toContain("running");
+    expect(lines[1]).toContain("grep auth.ts");
+  });
+
+  it("renders only one label when name and agent are identical", () => {
+    const lines = renderSubagentsWidget(
+      [
+        {
+          id: "worker-2",
+          name: "reviewer",
+          agent: "reviewer",
+          status: "running",
+          turn: 1,
+          elapsedMs: 34_000,
+        },
+      ],
+      80,
+    );
+    expect(lines[1]).toContain("reviewer");
+    expect(lines[1]).not.toContain("reviewer [reviewer]");
+  });
+
+  it("falls back to worker id for anonymous workers without name or agent", () => {
+    const lines = renderSubagentsWidget(
+      [
+        {
+          id: "anon-42",
+          status: "running",
+          turn: 1,
+          elapsedMs: 12_000,
+        },
+      ],
+      80,
+    );
+    expect(lines[1]).toContain("anon-42");
+  });
+
+  it("renders legacy worker with name but no agent safely", () => {
+    const lines = renderSubagentsWidget(
+      [
+        {
+          id: "legacy-1",
+          name: "legacy-worker",
+          status: "waiting",
+          turn: 3,
+          elapsedMs: 50_000,
+        },
+      ],
+      80,
+    );
+    expect(lines[1]).toContain("legacy-worker");
+    expect(lines[1]).not.toContain("[");
+  });
+
+  it("does not overflow on narrow terminal widths with name [agent]", () => {
+    const lines = renderSubagentsWidget(
+      [
+        {
+          id: "worker-long",
+          name: "auth-review",
+          agent: "reviewer",
+          status: "running",
+          turn: 1,
+          elapsedMs: 34_000,
+        },
+      ],
+      20,
+    );
+    expect(lines.every((line) => line.length <= 20)).toBe(true);
+    expect(lines).toHaveLength(3);
+  });
 });
