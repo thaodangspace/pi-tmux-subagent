@@ -7,29 +7,10 @@ import {
   projectWorker,
   type WorkerActivityView,
 } from "./projection.js";
+import { elapsed, pad, truncate } from "../runner/format.js";
 
 export const SUBAGENTS_WIDGET_ID = "tmux-subagents";
 
-function truncate(text: string, width: number): string {
-  if (width <= 0) return "";
-  if (text.length <= width) return text;
-  if (width === 1) return "…";
-  return `${text.slice(0, width - 1)}…`;
-}
-function pad(text: string, width: number): string {
-  const value = truncate(text, width);
-  return value + " ".repeat(Math.max(0, width - value.length));
-}
-function elapsed(ms?: number): string {
-  if (ms === undefined || !Number.isFinite(ms)) return "--:--";
-  const seconds = Math.max(0, Math.floor(ms / 1000));
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  const rest = seconds % 60;
-  return hours
-    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(rest).padStart(2, "0")}`
-    : `${String(minutes).padStart(2, "0")}:${String(rest).padStart(2, "0")}`;
-}
 function detail(worker: WorkerActivityView): string {
   if (worker.latestActivityKind === "tool" && worker.latestActivity) {
     return worker.latestActivity.replace(/^\[tool\]\s*/, "");
@@ -52,7 +33,10 @@ export function renderSubagentsWidget(
 
   const nameWidth = Math.min(
     24,
-    Math.max(8, ...workers.map((worker) => formatWorkerIdentity(worker).length)),
+    Math.max(
+      8,
+      ...workers.map((worker) => formatWorkerIdentity(worker).length),
+    ),
   );
   const statusWidth = Math.min(
     10,

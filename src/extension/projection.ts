@@ -30,18 +30,9 @@ export interface WorkerActivityView {
   latestActivityKind?: ActivityKind;
 }
 
-export function formatWorkerIdentity(worker: {
-  name?: string;
-  agent?: string;
-  id?: string;
-}): string {
-  if (worker.name && worker.agent) {
-    return worker.name !== worker.agent
-      ? `${worker.name} [${worker.agent}]`
-      : worker.name;
-  }
-  return worker.name ?? worker.agent ?? worker.id ?? "";
-}
+import { formatWorkerIdentity, modelSelectionLabel } from "../runner/format.js";
+export { formatWorkerIdentity, modelSelectionLabel };
+
 export interface WorkerProjectionInput {
   state: WorkerState;
   meta?: WorkerMeta;
@@ -154,23 +145,6 @@ export function recentActivity(
   return activities
     .sort((a, b) => a.at.localeCompare(b.at))
     .slice(-Math.max(0, count));
-}
-
-export function modelSelectionLabel(selection?: {
-  provider?: string;
-  model?: string;
-  thinking?: string;
-}): string | undefined {
-  if (!selection) return undefined;
-  const model =
-    selection.provider && selection.model
-      ? `${selection.provider}/${selection.model}`
-      : (selection.model ?? selection.provider);
-  return model
-    ? `${model}${selection.thinking ? `-${selection.thinking}` : ""}`
-    : selection.thinking
-      ? `thinking:${selection.thinking}`
-      : undefined;
 }
 
 export function projectWorker(

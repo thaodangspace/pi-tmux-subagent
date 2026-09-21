@@ -10,7 +10,8 @@ import type {
   WorkerResult,
 } from "../protocol/types.js";
 import { RpcClient } from "./rpc-client.js";
-import { renderRpcEvent } from "./renderer.js";
+import { normalizeRpcEvent } from "./renderer.js";
+import { SubagentMonitor } from "./monitor.js";
 import type { WorkerId } from "../types.js";
 import { WorktreeAdapter } from "../worktree/adapter.js";
 
@@ -28,6 +29,8 @@ export interface RunnerOptions {
   rpcCommand?: string;
   rpcArgs?: string[];
   output?: NodeJS.WritableStream;
+  columns?: number;
+  rows?: number;
 }
 
 export class Runner {
@@ -36,6 +39,7 @@ export class Runner {
   private turnText = "";
   private currentTurn = 0;
   private activeTurn: ActiveTurnContext | undefined;
+  private monitor!: SubagentMonitor;
   private readonly pendingTurnCommandSeqs: number[] = [];
   private inFlightCommand: { seq: number; startedAt: number } | undefined;
   private isUnresponsive = false;
@@ -63,6 +67,22 @@ export class Runner {
     const state = await this.store.readState(this.id).catch(() => undefined);
     this.lastProcessedCommandSeq = state?.lastCommandSeq ?? 0;
     this.currentTurn = state?.turn ?? 0;
+
+    this.monitor = new SubagentMonitor({
+      id: this.id,
+      name: meta.launch.name,
+      agent: meta.launch.agent,
+      provider: meta.launch.provider,
+      model: meta.launch.model,
+      thinking: meta.launch.thinking,
+      status: state?.status ?? "starting",
+      turn: this.currentTurn,
+      startedAt: meta.createdAt,
+      output: this.options.output ?? process.stdout,
+      columns: this.options.columns,
+      rows: this.options.rows,
+    });
+    this.monitor.start();
 
     const events = await this.store
       .readLog<WorkerEvent>(this.id, "events")
@@ -301,6 +321,13 @@ export class Runner {
     };
     await this.store.writeMeta(meta);
 
+    this.monitor.updateMeta({
+      activeModel,
+      provider: activeModel.provider,
+      model: activeModel.model,
+      thinking: activeModel.thinking,
+    });
+
     await this.record({ type: "rpc_started", data: { piPid: this.rpc.pid } });
     this.heartbeat = setInterval(() => {
       void this.touch();
@@ -321,6 +348,7 @@ export class Runner {
         this.heartbeat = undefined;
       }
       this.rpc?.stop();
+      this.monitor?.stop();
     }
   }
 
@@ -341,6 +369,8 @@ export class Runner {
         : {}),
     });
 
+    this.monitor?.tick();
+
     const threshold = this.options.unresponsiveMs ?? 10_000;
     if (
       this.inFlightCommand &&
@@ -348,6 +378,7 @@ export class Runner {
       Date.now() - this.inFlightCommand.startedAt >= threshold
     ) {
       this.isUnresponsive = true;
+      this.monitor?.updateStatus("unresponsive");
       await this.record({
         type: "unresponsive",
         commandSeq: this.inFlightCommand.seq,
@@ -360,6 +391,7 @@ export class Runner {
       Date.now() - this.lastTurnActivityAt >= threshold
     ) {
       this.isUnresponsive = true;
+      this.monitor?.updateStatus("unresponsive");
       await this.record({
         type: "unresponsive",
         ...(this.activeTurn.initiatingCommandSeq !== undefined
@@ -408,6 +440,7 @@ export class Runner {
     } else if (command.type === "stop") {
       await this.rpc.abort().catch(() => undefined);
       this.stopped = true;
+      this.monitor?.updateStatus("stopped");
       this.rpc.stop();
     }
     await this.record({ type: "command_ack", commandSeq: command.seq });
@@ -418,14 +451,17 @@ export class Runner {
     this.lastTurnActivityAt = Date.now();
     if (this.isUnresponsive) {
       this.isUnresponsive = false;
+      this.monitor?.updateStatus("running");
       await this.record({
         type: "responsive",
         data: "RPC worker resumed responding",
       }).catch(() => undefined);
     }
 
-    const display = renderRpcEvent(event);
-    if (display) (this.options.output ?? process.stdout).write(display);
+    const presentation = normalizeRpcEvent(event);
+    if (presentation) {
+      this.monitor?.handleEvent(presentation);
+    }
 
     if (event.type === "extension_ui_request" && event.id) {
       await this.rpc
@@ -440,6 +476,7 @@ export class Runner {
     if (event.type === "agent_start") {
       this.turnText = "";
       this.currentTurn += 1;
+      this.monitor?.updateStatus("running", this.currentTurn);
       const initiatingCommandSeq = this.pendingTurnCommandSeqs.shift();
       this.activeTurn = {
         turn: this.currentTurn,
@@ -471,6 +508,7 @@ export class Runner {
     });
 
     if (event.type === "agent_settled") {
+      this.monitor?.updateStatus("waiting", this.currentTurn);
       this.lastTurnActivityAt = undefined;
       const completedTurnContext = this.activeTurn;
       const completedText = this.turnText;
@@ -542,6 +580,8 @@ export class Runner {
         this.heartbeat = undefined;
       }
       const message = error instanceof Error ? error.message : String(error);
+      this.monitor?.updateStatus("failed");
+      this.monitor?.handleEvent({ kind: "error", message });
       await this.record({ type: "failed", data: message }).catch(
         () => undefined,
       );

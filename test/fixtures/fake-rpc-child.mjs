@@ -88,6 +88,15 @@ rl.on("line", async (line) => {
       memory.secret = command.message.slice("remember:".length).trim();
     }
 
+    if (command.message && command.message.includes("tool_grep")) {
+      send({
+        type: "tool_execution_start",
+        toolName: "grep",
+        args: { pattern: "refreshToken" },
+      });
+      send({ type: "tool_execution_end", toolName: "grep" });
+    }
+
     let text;
     if (command.message && command.message.includes("recall")) {
       text = `recalled:${memory.secret ?? "none"}`;
