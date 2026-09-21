@@ -102,6 +102,7 @@ describe("manager command delivery", () => {
         lastEventSeq: 2,
       },
     );
+    await store.appendEvent(id, { type: "stopped" });
     const cleanup = vi.fn(async (workspaceValue: unknown): Promise<void> => {
       void workspaceValue;
       throw Object.assign(new Error("Refusing to remove a dirty worktree"), {

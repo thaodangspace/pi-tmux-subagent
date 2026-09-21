@@ -8,11 +8,12 @@ import { TmuxAdapter, type Executor } from "../../src/tmux/adapter.js";
 import { workerId } from "../../src/types.js";
 
 const roots: string[] = [];
-afterEach(async () =>
-  Promise.all(
+afterEach(async () => {
+  vi.useRealTimers();
+  await Promise.all(
     roots.splice(0).map((x) => rm(x, { recursive: true, force: true })),
-  ),
-);
+  );
+});
 
 describe("recovery", () => {
   it("reconstructs history and marks stale workers orphaned", async () => {
@@ -45,12 +46,43 @@ describe("recovery", () => {
     const exec = vi
       .fn<Executor>()
       .mockResolvedValue({ code: 1, stdout: "", stderr: "" });
-    const state = await new Recovery(store, new TmuxAdapter(exec)).recover(id);
+    const state = await new Recovery(store, new TmuxAdapter(exec), { orphanGraceMs: 0 }).recover(id);
     expect(state).toMatchObject({
       status: "orphaned",
       turn: 0,
-      lastEventSeq: 2,
+      lastEventSeq: 3,
     });
+  });
+
+  it("persists suspicion across parent restart before orphaning dead workers", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    const root = await mkdtemp(join(tmpdir(), "pi-sa-"));
+    roots.push(root);
+    const store = new ProtocolStore(root);
+    const id = workerId("dead-window1");
+    await store.create(
+      {
+        version: 1,
+        id,
+        tmuxSession: "pi-sa-dead-window1",
+        createdAt: "2025-01-01T00:00:00Z",
+        cwd: root,
+        launch: { task: "x" },
+        runnerPid: 999999,
+        heartbeatAt: "2025-01-01T00:00:00Z",
+      },
+      { version: 1, id, status: "waiting", turn: 1, lastCommandSeq: 1, lastEventSeq: 0 },
+    );
+    await store.appendEvent(id, { type: "rpc_started" });
+    const exec = vi.fn<Executor>().mockResolvedValue({ code: 1, stdout: "", stderr: "" });
+    expect(
+      (await new Recovery(store, new TmuxAdapter(exec), { orphanGraceMs: 1_000 }).recover(id)).status,
+    ).toBe("waiting");
+    vi.setSystemTime(new Date("2026-01-01T00:00:02Z"));
+    expect(
+      (await new Recovery(store, new TmuxAdapter(exec), { orphanGraceMs: 1_000 }).recover(id)).status,
+    ).toBe("orphaned");
   });
 
   it("does not orphan a fresh starting worker within startup grace period", async () => {
@@ -119,9 +151,71 @@ describe("recovery", () => {
       .mockResolvedValue({ code: 1, stdout: "", stderr: "" });
     const recovery = new Recovery(store, new TmuxAdapter(exec), {
       startupGraceMs: 5_000,
+      orphanGraceMs: 0,
     });
     const state = await recovery.recover(id);
     expect(state.status).toBe("orphaned");
+  });
+
+  it("recovers from one transient tmux failure without orphaning", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-sa-"));
+    roots.push(root);
+    const store = new ProtocolStore(root);
+    const id = workerId("transient1");
+    await store.create(
+      {
+        version: 1,
+        id,
+        tmuxSession: "pi-sa-transient1",
+        createdAt: "2026-01-01T00:00:00Z",
+        cwd: root,
+        launch: { task: "x" },
+        runnerPid: process.pid,
+        piPid: process.pid,
+        heartbeatAt: new Date().toISOString(),
+      },
+      { version: 1, id, status: "waiting", turn: 1, lastCommandSeq: 1, lastEventSeq: 0 },
+    );
+    await store.appendEvent(id, { type: "rpc_started" });
+    const exec = vi
+      .fn<Executor>()
+      .mockResolvedValueOnce({ code: 1, stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ code: 1, stdout: "", stderr: "" })
+      .mockResolvedValue({ code: 0, stdout: "", stderr: "" });
+    const recovery = new Recovery(store, new TmuxAdapter(exec), {
+      orphanGraceMs: 10_000,
+    });
+
+    expect((await recovery.recover(id)).status).toBe("waiting");
+    expect((await recovery.recover(id)).status).toBe("waiting");
+    const events = await store.readLog<any>(id, "events");
+    expect(events.map((event) => event.type)).toContain("liveness_suspected");
+    expect(events.map((event) => event.type)).toContain("liveness_recovered");
+    expect(events.map((event) => event.type)).not.toContain("orphaned");
+  });
+
+  it("treats heartbeat and Pi PID as advisory while tmux and runner are alive", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-sa-"));
+    roots.push(root);
+    const store = new ProtocolStore(root);
+    const id = workerId("advisory1");
+    await store.create(
+      {
+        version: 1,
+        id,
+        tmuxSession: "pi-sa-advisory1",
+        createdAt: "2000-01-01T00:00:00Z",
+        cwd: root,
+        launch: { task: "x" },
+        runnerPid: process.pid,
+        piPid: 999998,
+        heartbeatAt: "2000-01-01T00:00:00Z",
+      },
+      { version: 1, id, status: "waiting", turn: 1, lastCommandSeq: 1, lastEventSeq: 0 },
+    );
+    await store.appendEvent(id, { type: "rpc_started" });
+    const exec = vi.fn<Executor>().mockResolvedValue({ code: 0, stdout: "", stderr: "" });
+    expect((await new Recovery(store, new TmuxAdapter(exec)).recover(id)).status).toBe("waiting");
   });
 
   it("performs liveness checks on settled waiting workers and detects dead runner", async () => {
@@ -159,7 +253,7 @@ describe("recovery", () => {
     const exec = vi
       .fn<Executor>()
       .mockResolvedValue({ code: 1, stdout: "", stderr: "" });
-    const recovery = new Recovery(store, new TmuxAdapter(exec));
+    const recovery = new Recovery(store, new TmuxAdapter(exec), { orphanGraceMs: 0 });
     const state = await recovery.recover(id);
     // Because runner is dead and heartbeat is stale, recovery marks it orphaned
     expect(state.status).toBe("orphaned");

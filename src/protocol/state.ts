@@ -12,6 +12,9 @@ export function reduceEvents(
       else if (event.type === "rpc_started") {
         next.status = "waiting";
         delete next.error;
+      } else if (event.type === "liveness_recovered") {
+        next.status = "waiting";
+        delete next.error;
       } else if (event.type === "agent_start") {
         next.status = "running";
         next.turn += 1;

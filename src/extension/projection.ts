@@ -87,6 +87,10 @@ export function eventActivity(
         limit,
       ),
     };
+  if (event.type === "liveness_suspected")
+    return { at: event.at, kind: "error", text: "worker liveness degraded" };
+  if (event.type === "liveness_recovered")
+    return { at: event.at, kind: "state", text: "worker liveness recovered" };
   if (event.type === "orphaned")
     return { at: event.at, kind: "error", text: "worker orphaned" };
   if (event.type === "agent_start")
@@ -97,6 +101,8 @@ export function eventActivity(
     return { at: event.at, kind: "state", text: "completed" };
   if (event.type === "stopped")
     return { at: event.at, kind: "state", text: "stopped" };
+  if (event.type === "killed")
+    return { at: event.at, kind: "error", text: "force-terminated" };
   return undefined;
 }
 

@@ -32,6 +32,7 @@ export interface ManagerOptions {
   runnerFile?: string;
   staleMs?: number;
   startupGraceMs?: number;
+  orphanGraceMs?: number;
   defaultEventLimit?: number;
   maxEventLimit?: number;
   maxEventBytes?: number;
@@ -61,6 +62,9 @@ export class Manager {
       ...(options.staleMs !== undefined ? { staleMs: options.staleMs } : {}),
       ...(options.startupGraceMs !== undefined
         ? { startupGraceMs: options.startupGraceMs }
+        : {}),
+      ...(options.orphanGraceMs !== undefined
+        ? { orphanGraceMs: options.orphanGraceMs }
         : {}),
     };
   }
