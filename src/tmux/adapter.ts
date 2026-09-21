@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { access } from "node:fs/promises";
 import { SubagentError, type WorkerId } from "../types.js";
+import { TmuxLayoutManager, type TmuxLayoutConfig } from "./layout.js";
 
 export interface ExecResult {
   code: number;
@@ -59,10 +60,19 @@ export function sessionName(id: WorkerId | string): string {
 }
 
 export class TmuxAdapter {
+  readonly layout: TmuxLayoutManager;
+
   constructor(
     private readonly exec: Executor = execFile,
     private readonly interactiveExec: InteractiveExecutor = defaultInteractiveExec,
-  ) {}
+    layoutConfig: Partial<TmuxLayoutConfig> = {},
+  ) {
+    this.layout = new TmuxLayoutManager(
+      exec,
+      process.env.TMUX_PANE,
+      layoutConfig,
+    );
+  }
 
   async available(): Promise<boolean> {
     try {
@@ -142,7 +152,11 @@ export class TmuxAdapter {
     ].flatMap((key) =>
       allEnv[key] === undefined ? [] : ["-e", `${key}=${allEnv[key]}`],
     );
-    if (process.env.TMUX && process.env.TMUX_PANE) {
+    if (
+      process.env.TMUX &&
+      process.env.TMUX_PANE &&
+      (await this.layout.hasVisibleCapacity())
+    ) {
       const result = await this.exec("tmux", [
         "split-window",
         "-d",
@@ -178,6 +192,12 @@ export class TmuxAdapter {
           "TMUX_CREATE_FAILED",
           tagged.stderr.trim() || `Could not tag pane for ${name}`,
         );
+      }
+      try {
+        await this.layout.rebalance();
+      } catch (error) {
+        await this.exec("tmux", ["kill-pane", "-t", pane]);
+        throw error;
       }
       return pane;
     }
@@ -215,6 +235,18 @@ export class TmuxAdapter {
         `tmux attach failed with exit code ${code}`,
       );
   }
+  async focus(id: WorkerId | string): Promise<void> {
+    const pane = await this.paneTarget(id);
+    if (!pane)
+      throw new SubagentError(
+        "TMUX_PANE_NOT_FOUND",
+        `No pane for worker ${id}`,
+      );
+    await this.layout.focusAgentPane(pane);
+  }
+  focusMain(): Promise<void> {
+    return this.layout.focusMainPane();
+  }
   async terminate(id: WorkerId | string): Promise<void> {
     const pane = await this.paneTarget(id);
     if (pane) {
@@ -224,6 +256,7 @@ export class TmuxAdapter {
         !/can't find (pane|session)/i.test(result.stderr)
       )
         throw new SubagentError("TMUX_TERMINATE_FAILED", result.stderr.trim());
+      await this.layout.rebalance();
       return;
     }
     const result = await this.exec("tmux", [

@@ -233,7 +233,7 @@ describe("subagent tool registration and execution", () => {
       "---\nname: reviewer\n---\nReview code.",
     );
 
-    manager.spawn = vi.fn(async (config: any) => ({
+    manager.spawn = vi.fn(async () => ({
       version: 1 as const,
       id: workerId("worker-spawned"),
       status: "starting" as const,

@@ -64,7 +64,9 @@ export class Runner {
     this.lastProcessedCommandSeq = state?.lastCommandSeq ?? 0;
     this.currentTurn = state?.turn ?? 0;
 
-    const events = await this.store.readLog<WorkerEvent>(this.id, "events").catch(() => []);
+    const events = await this.store
+      .readLog<WorkerEvent>(this.id, "events")
+      .catch(() => []);
 
     if (state && state.turn > 0) {
       const lastResult = await this.store
@@ -90,7 +92,9 @@ export class Runner {
         const resultSeq = currentState?.lastEventSeq ?? state.lastEventSeq;
 
         // Recover initiating command from durable turn context, not lastCommandSeq
-        const lastAgentStart = [...events].reverse().find((e) => e.type === "agent_start");
+        const lastAgentStart = [...events]
+          .reverse()
+          .find((e) => e.type === "agent_start");
         const initiatingCommandSeq =
           (lastAgentStart?.data as any)?.turnContext?.initiatingCommandSeq ??
           lastAgentStart?.commandSeq ??
@@ -122,7 +126,9 @@ export class Runner {
               : {}),
             resultSeq,
             status: "failed",
-            summary: completionSummary("Turn interrupted by runner crash/restart"),
+            summary: completionSummary(
+              "Turn interrupted by runner crash/restart",
+            ),
             hasDetails: true,
             completedAt: failedResult.completedAt,
           })
@@ -131,12 +137,18 @@ export class Runner {
     }
 
     // Recover commands acknowledged by RPC before crash but whose turn never started
-    const commands = await this.store.readLog<WorkerCommand>(this.id, "commands").catch(() => []);
+    const commands = await this.store
+      .readLog<WorkerCommand>(this.id, "commands")
+      .catch(() => []);
     const ackedCmdSeqs = new Set(
-      events.filter((e) => e.type === "command_ack" && e.commandSeq).map((e) => e.commandSeq!),
+      events
+        .filter((e) => e.type === "command_ack" && e.commandSeq)
+        .map((e) => e.commandSeq!),
     );
     const turnInitiatingCmds = commands.filter(
-      (cmd) => (cmd.type === "prompt" || cmd.type === "send") && ackedCmdSeqs.has(cmd.seq),
+      (cmd) =>
+        (cmd.type === "prompt" || cmd.type === "send") &&
+        ackedCmdSeqs.has(cmd.seq),
     );
     const startedCount = events.filter((e) => e.type === "agent_start").length;
     const unstartedCmds = turnInitiatingCmds.slice(startedCount);
@@ -149,7 +161,9 @@ export class Runner {
         commandSeq: cmd.seq,
         data: "Turn interrupted before start by runner crash/restart",
       }).catch(() => undefined);
-      const currentState = await this.store.readState(this.id).catch(() => undefined);
+      const currentState = await this.store
+        .readState(this.id)
+        .catch(() => undefined);
       const resultSeq = currentState?.lastEventSeq ?? 0;
       const failedResult: WorkerResult = {
         version: 1,
@@ -173,12 +187,17 @@ export class Runner {
           commandSeq: cmd.seq,
           resultSeq,
           status: "failed",
-          summary: completionSummary("Turn interrupted before start by runner crash/restart"),
+          summary: completionSummary(
+            "Turn interrupted before start by runner crash/restart",
+          ),
           hasDetails: true,
           completedAt: failedResult.completedAt,
         })
         .catch(() => undefined);
-      this.lastProcessedCommandSeq = Math.max(this.lastProcessedCommandSeq, cmd.seq);
+      this.lastProcessedCommandSeq = Math.max(
+        this.lastProcessedCommandSeq,
+        cmd.seq,
+      );
     }
 
     const sessionArgs = meta.piSessionFile
@@ -211,6 +230,7 @@ export class Runner {
 
     meta = {
       ...meta,
+      ...(process.env.TMUX_PANE ? { tmuxPane: process.env.TMUX_PANE } : {}),
       runnerPid: process.pid,
       heartbeatAt: new Date().toISOString(),
     };
@@ -423,9 +443,7 @@ export class Runner {
       const initiatingCommandSeq = this.pendingTurnCommandSeqs.shift();
       this.activeTurn = {
         turn: this.currentTurn,
-        ...(initiatingCommandSeq !== undefined
-          ? { initiatingCommandSeq }
-          : {}),
+        ...(initiatingCommandSeq !== undefined ? { initiatingCommandSeq } : {}),
         relatedCommandSeqs: [],
         startedAt: new Date().toISOString(),
       };
@@ -524,7 +542,9 @@ export class Runner {
         this.heartbeat = undefined;
       }
       const message = error instanceof Error ? error.message : String(error);
-      await this.record({ type: "failed", data: message }).catch(() => undefined);
+      await this.record({ type: "failed", data: message }).catch(
+        () => undefined,
+      );
       const state = await this.store.readState(this.id).catch(() => undefined);
       const meta = await this.store.readMeta(this.id).catch(() => undefined);
       const turn = state?.turn ?? this.currentTurn;

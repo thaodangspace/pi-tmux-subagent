@@ -6,5 +6,6 @@ export * from "./protocol/completion.js";
 export * from "./manager/manager.js";
 export * from "./manager/recovery.js";
 export * from "./tmux/adapter.js";
+export * from "./tmux/layout.js";
 export * from "./agents/discover.js";
 export * from "./worktree/adapter.js";

@@ -43,10 +43,21 @@ describe("tmux adapter", () => {
     process.env.TMUX_PANE = "%3";
     const exec = vi
       .fn<Executor>()
-      .mockResolvedValueOnce({ code: 1, stdout: "", stderr: "" })
-      .mockResolvedValueOnce({ code: 0, stdout: "", stderr: "" })
-      .mockResolvedValueOnce({ code: 0, stdout: "%9\n", stderr: "" })
-      .mockResolvedValueOnce({ code: 0, stdout: "", stderr: "" });
+      .mockImplementation(async (_command, args) => {
+        if (args[0] === "has-session")
+          return { code: 1, stdout: "", stderr: "" };
+        if (args[0] === "list-panes" && args.includes("-a"))
+          return { code: 0, stdout: "", stderr: "" };
+        if (args[0] === "list-panes")
+          return {
+            code: 0,
+            stdout: "%3\t120\t40\t\n%9\t120\t40\tabc\n",
+            stderr: "",
+          };
+        if (args[0] === "split-window")
+          return { code: 0, stdout: "%9\n", stderr: "" };
+        return { code: 0, stdout: "", stderr: "" };
+      });
     const tmux = new TmuxAdapter(exec);
     try {
       expect(

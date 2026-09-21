@@ -157,7 +157,7 @@ describe("subagent controls", () => {
       ]),
     );
     // Action dialog detail header
-    const detailDialogArg = select.mock.calls[1][0];
+    const detailDialogArg = select.mock.calls[1]![0];
     expect(detailDialogArg).toContain("worker: auth-review");
     expect(detailDialogArg).toContain("agent: reviewer");
     expect(detailDialogArg).toContain("model: openai-codex/gpt-5.6-sol-high");

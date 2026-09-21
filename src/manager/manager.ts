@@ -129,7 +129,7 @@ export class Manager {
           PI_TMUX_DEPTH: String(depth + 1),
           PI_TMUX_MAX_DEPTH: String(maxDepth),
         };
-        await this.tmux.create(
+        const tmuxTarget = await this.tmux.create(
           id,
           this.store.dir(id),
           this.runnerFile,
@@ -137,11 +137,16 @@ export class Manager {
           workerCwd,
           childEnv,
         );
+        if (tmuxTarget.startsWith("%")) {
+          const currentMeta = await this.store.readMeta(id);
+          await this.store.writeMeta({ ...currentMeta, tmuxPane: tmuxTarget });
+        }
       } catch (error) {
-        const { event, state: failed } = await this.store.appendEventAndProjectState(id, {
-          type: "failed",
-          data: error instanceof Error ? error.message : error,
-        });
+        const { event, state: failed } =
+          await this.store.appendEventAndProjectState(id, {
+            type: "failed",
+            data: error instanceof Error ? error.message : error,
+          });
         await this.store.writeResult({
           version: 1,
           id,
@@ -382,21 +387,27 @@ export class Manager {
       const current = await this.store.readState(value);
       if (current.status === "killed") return current;
 
-      const wasActiveTurn = current.status === "running" || current.status === "unresponsive";
+      const wasActiveTurn =
+        current.status === "running" || current.status === "unresponsive";
       const events = current.activeTurn
         ? []
-        : await this.store.readLog<WorkerEvent>(value, "events").catch(() => []);
-      const lastAgentStart = [...events].reverse().find((e) => e.type === "agent_start");
+        : await this.store
+            .readLog<WorkerEvent>(value, "events")
+            .catch(() => []);
+      const lastAgentStart = [...events]
+        .reverse()
+        .find((e) => e.type === "agent_start");
       const initiatingCmdSeq =
         current.activeTurn?.initiatingCommandSeq ??
         (lastAgentStart?.data as any)?.turnContext?.initiatingCommandSeq ??
         lastAgentStart?.commandSeq ??
         (current.lastCommandSeq > 0 ? current.lastCommandSeq : undefined);
 
-      const { event, state: killed } = await this.store.appendEventAndProjectState(value, {
-        type: "killed",
-        data: "Force-terminated by supervisor",
-      });
+      const { event, state: killed } =
+        await this.store.appendEventAndProjectState(value, {
+          type: "killed",
+          data: "Force-terminated by supervisor",
+        });
 
       if (wasActiveTurn) {
         const result: WorkerResult = {
@@ -404,7 +415,9 @@ export class Manager {
           id: value,
           status: "failed",
           turn: killed.turn,
-          ...(initiatingCmdSeq !== undefined ? { commandSeq: initiatingCmdSeq } : {}),
+          ...(initiatingCmdSeq !== undefined
+            ? { commandSeq: initiatingCmdSeq }
+            : {}),
           resultSeq: event.seq,
           eventSeq: event.seq,
           text: "Force-terminated by supervisor",
@@ -417,7 +430,9 @@ export class Manager {
           kind: "turn",
           id: value,
           turn: killed.turn,
-          ...(initiatingCmdSeq !== undefined ? { commandSeq: initiatingCmdSeq } : {}),
+          ...(initiatingCmdSeq !== undefined
+            ? { commandSeq: initiatingCmdSeq }
+            : {}),
           resultSeq: event.seq,
           status: "failed",
           summary: completionSummary("Force-terminated by supervisor"),

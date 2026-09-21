@@ -46,6 +46,8 @@ export interface WorkerMeta {
   /** Stable Pi parent session identity. Omitted for CLI/manual workers. */
   ownerSessionKey?: string;
   tmuxSession: string;
+  /** Stable tmux pane identity; indexes and positions may change on rebalance. */
+  tmuxPane?: string;
   createdAt: string;
   cwd: string;
   launch: LaunchConfig;

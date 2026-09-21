@@ -24,7 +24,7 @@ describe("first-run registry creation and spawn rollback", () => {
     const store = new ProtocolStore(nestedRoot);
 
     const tmux = new TmuxAdapter();
-    tmux.create = vi.fn(async () => "session-first1");
+    tmux.create = vi.fn(async () => "%9");
     const manager = new Manager({ store, tmux });
 
     const state = await manager.spawn({ task: "hello" }, parentDir, "first1");
@@ -33,6 +33,7 @@ describe("first-run registry creation and spawn rollback", () => {
     const meta = await store.readMeta(workerId("first1"));
     expect(meta.id).toBe("first1");
     expect(meta.launch.task).toBe("hello");
+    expect(meta.tmuxPane).toBe("%9");
   });
 
   it("cleans up worktree on spawn rollback if registration fails", async () => {

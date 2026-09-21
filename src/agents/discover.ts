@@ -238,7 +238,8 @@ export async function resolveLaunch(
     };
   }
   const config = await loadAgentConfig(cwd);
-  const { agent: _overrideAgent, ...safeOverrides } = overrides;
+  const safeOverrides = { ...overrides };
+  delete safeOverrides.agent;
   const launch = Object.fromEntries(
     Object.entries({
       ...base,
