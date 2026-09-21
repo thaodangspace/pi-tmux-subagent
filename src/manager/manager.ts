@@ -1,7 +1,11 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Recovery, type RecoveryOptions } from "./recovery.js";
+import {
+  Recovery,
+  TERMINAL_WORKER_STATUSES,
+  type RecoveryOptions,
+} from "./recovery.js";
 import { ProtocolStore } from "../protocol/store.js";
 import { completionSummary } from "../protocol/completion.js";
 import type {
@@ -9,6 +13,7 @@ import type {
   CompletionQuery,
   EventHistoryOptions,
   LaunchConfig,
+  WorkerCommand,
   WorkerCompletion,
   WorkerEvent,
   WorkerEventsResult,
@@ -104,6 +109,7 @@ export class Manager {
     const meta: WorkerMeta = {
       version: 1,
       id,
+      instanceId: randomUUID(),
       ...(ownerSessionKey ? { ownerSessionKey } : {}),
       tmuxSession: sessionName(id),
       createdAt: new Date().toISOString(),
@@ -150,6 +156,7 @@ export class Manager {
         await this.store.writeResult({
           version: 1,
           id,
+          ...(meta.instanceId ? { instanceId: meta.instanceId } : {}),
           status: "failed",
           turn: failed.turn,
           commandSeq: 1,
@@ -163,6 +170,7 @@ export class Manager {
           version: 1,
           kind: "turn",
           id,
+          ...(meta.instanceId ? { instanceId: meta.instanceId } : {}),
           turn: failed.turn,
           commandSeq: 1,
           resultSeq: event.seq,
@@ -184,22 +192,67 @@ export class Manager {
     return state;
   }
 
+  private async withControllableWorker<T>(
+    id: string,
+    action: "send" | "steer" | "abort" | "stop",
+    fn: (value: WorkerId, state: WorkerState) => Promise<T>,
+  ): Promise<T> {
+    const value = workerId(id);
+    return this.store.withWorkerLock(value, async () => {
+      try {
+        await this.store.readMeta(value);
+      } catch (error: any) {
+        if (error?.code === "ENOENT") {
+          throw new SubagentError(
+            "WORKER_NOT_FOUND",
+            `Worker not found: ${value}`,
+          );
+        }
+        throw error;
+      }
+      const state = await this.status(value);
+      if (TERMINAL_WORKER_STATUSES.has(state.status)) {
+        throw new SubagentError(
+          "WORKER_TERMINAL",
+          `Cannot ${action} worker ${value} in terminal status '${state.status}'`,
+        );
+      }
+      return await fn(value, state);
+    });
+  }
+
   async send(id: string, text: string): Promise<number> {
-    return (
-      await this.store.appendCommand(workerId(id), { type: "send", text })
-    ).seq;
+    return this.withControllableWorker(id, "send", async (value) => {
+      return (
+        await this.store.appendCommand(value, { type: "send", text })
+      ).seq;
+    });
   }
   async steer(id: string, text: string): Promise<number> {
-    return (
-      await this.store.appendCommand(workerId(id), { type: "steer", text })
-    ).seq;
+    return this.withControllableWorker(id, "steer", async (value) => {
+      return (
+        await this.store.appendCommand(value, { type: "steer", text })
+      ).seq;
+    });
   }
   async abort(id: string): Promise<number> {
-    return (await this.store.appendCommand(workerId(id), { type: "abort" }))
-      .seq;
+    return this.withControllableWorker(id, "abort", async (value) => {
+      return (await this.store.appendCommand(value, { type: "abort" })).seq;
+    });
   }
   async stop(id: string): Promise<number> {
-    return (await this.store.appendCommand(workerId(id), { type: "stop" })).seq;
+    return this.withControllableWorker(id, "stop", async (value, state) => {
+      const commands = await this.store
+        .readLogTail<WorkerCommand>(value, "commands", 10)
+        .catch(() => []);
+      const pendingStop = commands.find(
+        (cmd) => cmd.type === "stop" && cmd.seq > state.lastCommandSeq,
+      );
+      if (pendingStop) {
+        return pendingStop.seq;
+      }
+      return (await this.store.appendCommand(value, { type: "stop" })).seq;
+    });
   }
   status(id: string): Promise<WorkerState> {
     return new Recovery(this.store, this.tmux, this.recoveryOptions).recover(
@@ -413,6 +466,7 @@ export class Manager {
         const result: WorkerResult = {
           version: 1,
           id: value,
+          ...(meta?.instanceId ? { instanceId: meta.instanceId } : {}),
           status: "failed",
           turn: killed.turn,
           ...(initiatingCmdSeq !== undefined
@@ -429,6 +483,7 @@ export class Manager {
           version: 1,
           kind: "turn",
           id: value,
+          ...(meta?.instanceId ? { instanceId: meta.instanceId } : {}),
           turn: killed.turn,
           ...(initiatingCmdSeq !== undefined
             ? { commandSeq: initiatingCmdSeq }
@@ -445,6 +500,7 @@ export class Manager {
           version: 1,
           kind: "worker",
           id: value,
+          ...(meta?.instanceId ? { instanceId: meta.instanceId } : {}),
           turn: killed.turn,
           resultSeq: event.seq,
           status: "failed",

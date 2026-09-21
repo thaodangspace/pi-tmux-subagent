@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Manager } from "../../src/manager/manager.js";
 import { ProtocolStore } from "../../src/protocol/store.js";
 import { TmuxAdapter, type Executor } from "../../src/tmux/adapter.js";
+import { SubagentError, workerId } from "../../src/types.js";
 
 const roots: string[] = [];
 afterEach(async () =>
@@ -197,5 +198,118 @@ describe("manager command delivery", () => {
 
     const events = await manager.store.readLog("fresh-worker", "events");
     expect(events.some((e: any) => e.type === "orphaned")).toBe(false);
+  });
+
+  it.each([
+    "failed",
+    "stopped",
+    "killed",
+    "orphaned",
+    "completed",
+  ] as const)("rejects send, steer, abort, and stop for terminal state '%s'", async (status) => {
+    const root = await mkdtemp(join(tmpdir(), `pi-sa-term-${status}-`));
+    roots.push(root);
+    const store = new ProtocolStore(root);
+    const id = workerId(`term-${status}`);
+    await store.create(
+      {
+        version: 1,
+        id,
+        tmuxSession: `pi-sa-${id}`,
+        createdAt: "2026-01-01T00:00:00Z",
+        cwd: root,
+        launch: { task: "terminal test" },
+      },
+      {
+        version: 1,
+        id,
+        status,
+        turn: 1,
+        lastCommandSeq: 1,
+        lastEventSeq: 1,
+      },
+    );
+    await store.appendCommand(id, { type: "prompt", text: "initial" });
+
+    const manager = new Manager({ store, tmux: { exists: vi.fn(async () => false) } as any });
+
+    // Assert send is rejected and appends no new command
+    await expect(manager.send(id, "late send")).rejects.toThrow(SubagentError);
+    await expect(manager.send(id, "late send")).rejects.toMatchObject({ code: "WORKER_TERMINAL" });
+
+    // Assert steer is rejected and appends no new command
+    await expect(manager.steer(id, "late steer")).rejects.toThrow(SubagentError);
+    await expect(manager.steer(id, "late steer")).rejects.toMatchObject({ code: "WORKER_TERMINAL" });
+
+    // Assert abort is rejected and appends no new command
+    await expect(manager.abort(id)).rejects.toThrow(SubagentError);
+    await expect(manager.abort(id)).rejects.toMatchObject({ code: "WORKER_TERMINAL" });
+
+    // Assert stop is rejected and appends no new command
+    await expect(manager.stop(id)).rejects.toThrow(SubagentError);
+    await expect(manager.stop(id)).rejects.toMatchObject({ code: "WORKER_TERMINAL" });
+
+    const commands = await store.readLog(id, "commands");
+    expect(commands).toHaveLength(1);
+    expect((commands[0] as any).text).toBe("initial");
+  });
+
+  it("concurrency race test: termination winning transition rejects late send and leaves no stranded command", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-sa-race-"));
+    roots.push(root);
+    const store = new ProtocolStore(root);
+    const id = workerId("race-worker");
+    await store.create(
+      {
+        version: 1,
+        id,
+        tmuxSession: `pi-sa-${id}`,
+        createdAt: "2026-01-01T00:00:00Z",
+        cwd: root,
+        launch: { task: "race" },
+        runnerPid: process.pid,
+      },
+      {
+        version: 1,
+        id,
+        status: "waiting",
+        turn: 1,
+        lastCommandSeq: 1,
+        lastEventSeq: 0,
+      },
+    );
+    await store.appendCommand(id, { type: "prompt", text: "initial" });
+
+    const terminate = vi.fn(async () => {});
+    const manager = new Manager({
+      store,
+      tmux: { terminate, exists: vi.fn(async () => true) } as any,
+    });
+
+    // Run termination and late send concurrently
+    const [termResult, sendResult] = await Promise.allSettled([
+      manager.forceTerminate(id),
+      manager.send(id, "late command"),
+    ]);
+
+    expect(termResult.status).toBe("fulfilled");
+    const finalState = await manager.status(id);
+    expect(finalState.status).toBe("killed");
+
+    const commands = await store.readLog(id, "commands");
+    if (sendResult.status === "rejected") {
+      expect((sendResult.reason as any).code).toBe("WORKER_TERMINAL");
+      expect(commands.map((c: any) => c.text)).not.toContain("late command");
+    } else {
+      // If send won the lock, it was accepted BEFORE forceTerminate won the transition
+      expect(commands.map((c: any) => c.text)).toContain("late command");
+    }
+
+    // Now that worker is definitely killed, any new command MUST be rejected
+    await expect(manager.send(id, "after killed")).rejects.toMatchObject({
+      code: "WORKER_TERMINAL",
+    });
+    const finalCommands = await store.readLog(id, "commands");
+    expect(finalCommands.map((c: any) => c.text)).not.toContain("after killed");
   });
 });

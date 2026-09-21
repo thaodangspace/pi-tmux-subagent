@@ -65,6 +65,22 @@ export function reduceEvents(
       } else if (event.type === "agent_settled") {
         next.status = "waiting";
         delete next.activeTurn;
+      } else if (event.type === "turn_interrupted") {
+        next.status = "waiting";
+        delete next.activeTurn;
+        if (
+          typeof event.data === "object" &&
+          event.data !== null &&
+          "turn" in event.data &&
+          typeof (event.data as any).turn === "number"
+        ) {
+          next.turn = Math.max(next.turn, (event.data as any).turn);
+        } else if (
+          typeof event.data === "string" &&
+          event.data.includes("before start")
+        ) {
+          next.turn += 1;
+        }
       } else if (event.type === "stopped") {
         next.status = "stopped";
       } else if (event.type === "killed") {

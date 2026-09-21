@@ -79,4 +79,136 @@ describe("runner turn correlation", () => {
     const secondCompletion = await store.readCompletion(id);
     expect(secondCompletion).toMatchObject({ turn: 2, commandSeq: 2 });
   });
+
+  it("recovers unstarted command by identity when unrelated agent_start exists", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-runner-correlation-"));
+    roots.push(root);
+    const store = new ProtocolStore(root);
+    const id = workerId("correlation-unrelated");
+    await store.create(
+      {
+        version: 1,
+        id,
+        tmuxSession: `pi-sa-${id}`,
+        createdAt: "2026-01-01T00:00:00Z",
+        cwd: root,
+        launch: { task: "first" },
+      },
+      {
+        version: 1,
+        id,
+        status: "waiting",
+        turn: 0,
+        lastCommandSeq: 1,
+        lastEventSeq: 2,
+      },
+    );
+
+    // Command A (seq: 1) is ACKed
+    await store.appendCommand(id, { type: "prompt", text: "command A" });
+    await store.appendEvent(id, { type: "command_ack", commandSeq: 1 });
+    // An unrelated agent_start exists with no initiating command sequence
+    await store.appendEvent(id, {
+      type: "agent_start",
+      data: { turnContext: { turn: 1, relatedCommandSeqs: [] } },
+    });
+
+    const runner = new Runner(store.dir(id)) as any;
+    runner.rpc = {
+      start: vi.fn(),
+      stop: vi.fn(),
+      on: vi.fn(),
+    };
+
+    const runPromise = runner.run();
+    runner.stopped = true;
+    if (runner.heartbeat) clearInterval(runner.heartbeat);
+    await runPromise.catch(() => undefined);
+
+    // Command A must be finalized as an interrupted pre-start turn, not skipped
+    const result = await store.readResult(id);
+    expect(result).toBeDefined();
+    expect(result?.turn).toBe(1);
+    expect(result?.commandSeq).toBe(1);
+    expect(result?.status).toBe("failed");
+    expect(result?.text).toContain("Turn interrupted before start");
+
+    const completion = await store.readCompletion(id);
+    expect(completion).toBeDefined();
+    expect(completion?.turn).toBe(1);
+    expect(completion?.commandSeq).toBe(1);
+    expect(completion?.status).toBe("failed");
+  });
+
+  it("uses exact set subtraction for multiple ACKed commands and explicit initiatingCommandSeq", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-runner-correlation-"));
+    roots.push(root);
+    const store = new ProtocolStore(root);
+    const id = workerId("correlation-subset");
+    await store.create(
+      {
+        version: 1,
+        id,
+        tmuxSession: `pi-sa-${id}`,
+        createdAt: "2026-01-01T00:00:00Z",
+        cwd: root,
+        launch: { task: "cmd1" },
+      },
+      {
+        version: 1,
+        id,
+        status: "waiting",
+        turn: 2,
+        lastCommandSeq: 3,
+        lastEventSeq: 6,
+      },
+    );
+
+    // Commands 1, 2, 3 are all ACKed
+    await store.appendCommand(id, { type: "prompt", text: "cmd 1" });
+    await store.appendCommand(id, { type: "send", text: "cmd 2" });
+    await store.appendCommand(id, { type: "send", text: "cmd 3" });
+    await store.appendEvent(id, { type: "command_ack", commandSeq: 1 });
+    await store.appendEvent(id, { type: "command_ack", commandSeq: 2 });
+    await store.appendEvent(id, { type: "command_ack", commandSeq: 3 });
+
+    // agent_start for command 1
+    await store.appendEvent(id, {
+      type: "agent_start",
+      commandSeq: 1,
+      data: { turnContext: { turn: 1, initiatingCommandSeq: 1 } },
+    });
+    // agent_start for command 3 (out of order or skipping 2)
+    await store.appendEvent(id, {
+      type: "agent_start",
+      commandSeq: 3,
+      data: { turnContext: { turn: 2, initiatingCommandSeq: 3 } },
+    });
+
+    const runner = new Runner(store.dir(id)) as any;
+    runner.rpc = {
+      start: vi.fn(),
+      stop: vi.fn(),
+      on: vi.fn(),
+    };
+
+    const runPromise = runner.run();
+    runner.stopped = true;
+    if (runner.heartbeat) clearInterval(runner.heartbeat);
+    await runPromise.catch(() => undefined);
+
+    // Only Command 2 (unstarted) should be finalized as recovered turn
+    const result = await store.readResult(id);
+    expect(result).toBeDefined();
+    expect(result?.commandSeq).toBe(2);
+    expect(result?.turn).toBe(3);
+    expect(result?.status).toBe("failed");
+    expect(result?.text).toContain("Turn interrupted before start");
+
+    const completion = await store.readCompletion(id);
+    expect(completion).toBeDefined();
+    expect(completion?.commandSeq).toBe(2);
+    expect(completion?.turn).toBe(3);
+    expect(completion?.status).toBe("failed");
+  });
 });

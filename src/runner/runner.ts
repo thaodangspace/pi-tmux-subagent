@@ -88,11 +88,15 @@ export class Runner {
       .readLog<WorkerEvent>(this.id, "events")
       .catch(() => []);
 
+    let activeInitiatingCommandSeq: number | undefined;
+    let completedTurnCommandSeq: number | undefined;
+
     if (state && state.turn > 0) {
       const lastResult = await this.store
         .readResult(this.id)
         .catch(() => undefined);
       if (lastResult && lastResult.turn === state.turn) {
+        completedTurnCommandSeq = lastResult.commandSeq;
         const lastCompletion = await this.store
           .readCompletion(this.id)
           .catch(() => undefined);
@@ -102,8 +106,23 @@ export class Runner {
             .catch(() => undefined);
         }
       } else if (!lastResult || lastResult.turn < state.turn) {
+        // Recover initiating command from durable turn context, not lastCommandSeq
+        const lastAgentStart = [...events]
+          .reverse()
+          .find((e) => e.type === "agent_start");
+        const lastTurnContext = (lastAgentStart?.data as any)?.turnContext;
+        const initiatingCommandSeq =
+          state.activeTurn?.initiatingCommandSeq ??
+          lastTurnContext?.initiatingCommandSeq ??
+          lastAgentStart?.commandSeq ??
+          (!lastTurnContext && state.lastCommandSeq > 0 ? state.lastCommandSeq : undefined);
+        activeInitiatingCommandSeq = initiatingCommandSeq;
+
         await this.record({
           type: "turn_interrupted",
+          ...(initiatingCommandSeq !== undefined
+            ? { commandSeq: initiatingCommandSeq }
+            : {}),
           data: "Turn interrupted by runner crash/restart",
         }).catch(() => undefined);
         const currentState = await this.store
@@ -111,18 +130,10 @@ export class Runner {
           .catch(() => undefined);
         const resultSeq = currentState?.lastEventSeq ?? state.lastEventSeq;
 
-        // Recover initiating command from durable turn context, not lastCommandSeq
-        const lastAgentStart = [...events]
-          .reverse()
-          .find((e) => e.type === "agent_start");
-        const initiatingCommandSeq =
-          (lastAgentStart?.data as any)?.turnContext?.initiatingCommandSeq ??
-          lastAgentStart?.commandSeq ??
-          (state.lastCommandSeq > 0 ? state.lastCommandSeq : undefined);
-
         const failedResult: WorkerResult = {
           version: 1,
           id: this.id,
+          ...(meta.instanceId ? { instanceId: meta.instanceId } : {}),
           status: "failed",
           turn: state.turn,
           ...(initiatingCommandSeq !== undefined
@@ -140,6 +151,7 @@ export class Runner {
             version: 1,
             kind: "turn",
             id: this.id,
+            ...(meta.instanceId ? { instanceId: meta.instanceId } : {}),
             turn: state.turn,
             ...(initiatingCommandSeq !== undefined
               ? { commandSeq: initiatingCommandSeq }
@@ -162,7 +174,7 @@ export class Runner {
       .catch(() => []);
     const ackedCmdSeqs = new Set(
       events
-        .filter((e) => e.type === "command_ack" && e.commandSeq)
+        .filter((e) => e.type === "command_ack" && e.commandSeq !== undefined)
         .map((e) => e.commandSeq!),
     );
     const turnInitiatingCmds = commands.filter(
@@ -170,24 +182,49 @@ export class Runner {
         (cmd.type === "prompt" || cmd.type === "send") &&
         ackedCmdSeqs.has(cmd.seq),
     );
-    const startedCount = events.filter((e) => e.type === "agent_start").length;
-    const unstartedCmds = turnInitiatingCmds.slice(startedCount);
+    const finalizedCmdSeqs = new Set<number>();
+    if (activeInitiatingCommandSeq !== undefined) {
+      finalizedCmdSeqs.add(activeInitiatingCommandSeq);
+    }
+    if (completedTurnCommandSeq !== undefined) {
+      finalizedCmdSeqs.add(completedTurnCommandSeq);
+    }
+    for (const e of events) {
+      if (e.type === "agent_start") {
+        const seq =
+          (e.data as any)?.turnContext?.initiatingCommandSeq ?? e.commandSeq;
+        if (seq !== undefined) finalizedCmdSeqs.add(seq);
+      } else if (e.type === "turn_interrupted" && e.commandSeq !== undefined) {
+        finalizedCmdSeqs.add(e.commandSeq);
+      }
+    }
+    const unstartedCmds = turnInitiatingCmds.filter(
+      (cmd) => !finalizedCmdSeqs.has(cmd.seq),
+    );
 
     for (const cmd of unstartedCmds) {
-      const unstartedTurn = Math.max(state?.turn ?? 0, this.currentTurn) + 1;
+      const currentState = await this.store
+        .readState(this.id)
+        .catch(() => undefined);
+      const unstartedTurn =
+        Math.max(currentState?.turn ?? 0, this.currentTurn) + 1;
       this.currentTurn = unstartedTurn;
       await this.record({
         type: "turn_interrupted",
         commandSeq: cmd.seq,
-        data: "Turn interrupted before start by runner crash/restart",
+        data: {
+          turn: unstartedTurn,
+          reason: "Turn interrupted before start by runner crash/restart",
+        },
       }).catch(() => undefined);
-      const currentState = await this.store
+      const updatedState = await this.store
         .readState(this.id)
         .catch(() => undefined);
-      const resultSeq = currentState?.lastEventSeq ?? 0;
+      const resultSeq = updatedState?.lastEventSeq ?? 0;
       const failedResult: WorkerResult = {
         version: 1,
         id: this.id,
+        ...(meta.instanceId ? { instanceId: meta.instanceId } : {}),
         status: "failed",
         turn: unstartedTurn,
         commandSeq: cmd.seq,
@@ -203,6 +240,7 @@ export class Runner {
           version: 1,
           kind: "turn",
           id: this.id,
+          ...(meta.instanceId ? { instanceId: meta.instanceId } : {}),
           turn: unstartedTurn,
           commandSeq: cmd.seq,
           resultSeq,
@@ -218,6 +256,13 @@ export class Runner {
         this.lastProcessedCommandSeq,
         cmd.seq,
       );
+    }
+
+    const recoveredState = await this.store
+      .readState(this.id)
+      .catch(() => undefined);
+    if (recoveredState && recoveredState.turn !== this.currentTurn) {
+      this.currentTurn = recoveredState.turn;
     }
 
     const sessionArgs = meta.piSessionFile
@@ -526,6 +571,7 @@ export class Runner {
       const result: WorkerResult = {
         version: 1,
         id: this.id,
+        ...(meta.instanceId ? { instanceId: meta.instanceId } : {}),
         status: "completed",
         turn: completedTurnNumber,
         ...(completedTurnContext?.initiatingCommandSeq !== undefined
@@ -599,6 +645,7 @@ export class Runner {
           .writeResult({
             version: 1,
             id: this.id,
+            ...(meta?.instanceId ? { instanceId: meta.instanceId } : {}),
             status: "failed",
             turn,
             ...(commandSeq !== undefined ? { commandSeq } : {}),
@@ -615,6 +662,7 @@ export class Runner {
             version: 1,
             kind: "turn",
             id: this.id,
+            ...(meta?.instanceId ? { instanceId: meta.instanceId } : {}),
             turn,
             ...(commandSeq !== undefined ? { commandSeq } : {}),
             resultSeq,
@@ -631,6 +679,7 @@ export class Runner {
             version: 1,
             kind: "worker",
             id: this.id,
+            ...(meta?.instanceId ? { instanceId: meta.instanceId } : {}),
             turn,
             resultSeq,
             status: "failed",

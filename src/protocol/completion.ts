@@ -44,6 +44,7 @@ export function completedNotification(
     version: 1,
     kind: "turn",
     id: result.id,
+    ...(result.instanceId ? { instanceId: result.instanceId } : {}),
     turn: result.turn,
     ...(result.commandSeq !== undefined
       ? { commandSeq: result.commandSeq }

@@ -162,4 +162,80 @@ describe("durable completion feed", () => {
       code: "INVALID_COMPLETION_CURSOR",
     });
   });
+
+  it("worker ID reuse: recreated worker with same ID publishes completion independently with different instanceId", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-sa-reuse-"));
+    roots.push(root);
+    const store = new ProtocolStore(root);
+    const manager = new Manager({
+      store,
+      tmux: {
+        create: vi.fn(async () => "%0"),
+        terminate: vi.fn(async () => {}),
+        exists: vi.fn(async () => false),
+      } as any,
+    });
+    const id = "reuse-worker";
+
+    // 1. Create worker with requested ID reuse-worker
+    await manager.spawn({ task: "first incarnation" }, root, id, "session-a");
+    const firstMeta = await store.readMeta(workerId(id));
+    expect(firstMeta.instanceId).toBeDefined();
+
+    // 2. Publish a completion
+    await store.writeCompletion({
+      version: 1,
+      id: workerId(id),
+      turn: 1,
+      resultSeq: 1,
+      status: "completed",
+      summary: "first completion",
+      hasDetails: false,
+      completedAt: "2026-01-01T00:00:00Z",
+    });
+
+    // 3. Mark terminal and delete worker
+    await store.writeState({
+      version: 1,
+      id: workerId(id),
+      status: "stopped",
+      turn: 1,
+      lastCommandSeq: 1,
+      lastEventSeq: 1,
+    });
+    await manager.delete(id);
+
+    // 4. Recreate worker with the same requested ID
+    await manager.spawn({ task: "second incarnation" }, root, id, "session-a");
+    const secondMeta = await store.readMeta(workerId(id));
+    expect(secondMeta.instanceId).toBeDefined();
+    expect(secondMeta.instanceId).not.toBe(firstMeta.instanceId);
+
+    // 5. Publish a completion with the same turn/resultSeq/status values
+    await store.writeCompletion({
+      version: 1,
+      id: workerId(id),
+      turn: 1,
+      resultSeq: 1,
+      status: "completed",
+      summary: "second completion",
+      hasDetails: false,
+      completedAt: "2026-01-01T00:01:00Z",
+    });
+
+    // 6. Query completion feed
+    const feed = await store.completions({
+      consumer: "test",
+      ownerSessionKey: "session-a",
+    });
+    const completions = feed.filter((e) => e.completion.id === id);
+    expect(completions).toHaveLength(2);
+
+    const [first, second] = completions;
+    expect(first!.completion.instanceId).toBe(firstMeta.instanceId);
+    expect(second!.completion.instanceId).toBe(secondMeta.instanceId);
+    expect(first!.completion.instanceId).not.toBe(second!.completion.instanceId);
+    expect(first!.completion.summary).toBe("first completion");
+    expect(second!.completion.summary).toBe("second completion");
+  });
 });

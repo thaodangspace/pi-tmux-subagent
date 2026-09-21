@@ -311,7 +311,7 @@ describe("durable lifecycle", () => {
         return s.status === "waiting" && s.turn >= 1 ? s : undefined;
       });
 
-      const res1 = await manager1.result(id);
+      const res1 = await waitFor(async () => await manager1.result(id));
       expect(res1?.text).toBe("reply-1:hello");
       expect(res1?.turn).toBe(1);
 
@@ -334,7 +334,7 @@ describe("durable lifecycle", () => {
         return s.status === "waiting" && s.turn === 2 ? s : undefined;
       });
 
-      const res2 = await manager2.result(id);
+      const res2 = await waitFor(async () => await manager2.result(id));
       expect(res2?.text).toBe("reply-2:world");
       expect(res2?.turn).toBe(2);
 

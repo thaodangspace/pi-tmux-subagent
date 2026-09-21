@@ -43,6 +43,8 @@ export interface LaunchConfig {
 export interface WorkerMeta {
   version: 1;
   id: WorkerId;
+  /** Unique durable incarnation identity across re-creations. */
+  instanceId?: string;
   /** Stable Pi parent session identity. Omitted for CLI/manual workers. */
   ownerSessionKey?: string;
   tmuxSession: string;
@@ -95,6 +97,7 @@ export interface WorkerState {
 export interface WorkerResult {
   version: 1;
   id: WorkerId;
+  instanceId?: string;
   /** Absent on legacy successful results. */
   status?: "completed" | "failed";
   turn: number;
@@ -113,6 +116,7 @@ export interface WorkerCompletion {
   version: 1;
   kind?: CompletionKind;
   id: WorkerId;
+  instanceId?: string;
   turn: number;
   commandSeq?: number;
   /** Event sequence that finalized the result or failure. */

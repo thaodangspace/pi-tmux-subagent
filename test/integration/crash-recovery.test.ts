@@ -278,4 +278,99 @@ describe("crash recovery across turn boundaries", () => {
     expect(completion?.commandSeq).toBe(1);
     expect(completion?.status).toBe("failed");
   });
+
+  it("post-boundary-1b continuity: turn advances consistently on follow-up prompt after recovered unstarted turn", async () => {
+    const { store, id } = await fixture("worker-b1b-continuity");
+
+    // 1. Prompt #1: command_ack, crash before agent_start
+    await store.appendCommand(id, { type: "prompt", text: "prompt #1 crash before start" });
+    await store.appendEvent(id, { type: "command_ack", commandSeq: 1 });
+    await store.writeState({
+      version: 1,
+      id,
+      status: "waiting",
+      turn: 0,
+      lastCommandSeq: 1,
+      lastEventSeq: 1,
+    });
+
+    // 2. Restart and recover failed turn #1
+    const runner = new Runner(store.dir(id)) as any;
+    runner.rpc = {
+      start: vi.fn(),
+      stop: vi.fn(),
+      on: vi.fn(),
+      prompt: vi.fn(async () => {}),
+    };
+
+    const runPromise = runner.run();
+    runner.stopped = true;
+    if (runner.heartbeat) clearInterval(runner.heartbeat);
+    await runPromise.catch(() => undefined);
+
+    const firstResult = await store.readResult(id);
+    expect(firstResult).toMatchObject({
+      turn: 1,
+      commandSeq: 1,
+      status: "failed",
+    });
+    const firstCompletion = await store.readCompletion(id);
+    expect(firstCompletion).toMatchObject({
+      turn: 1,
+      commandSeq: 1,
+      status: "failed",
+    });
+
+    // Verify durable turn state advanced consistently
+    const intermediateState = await store.readState(id);
+    expect(intermediateState.turn).toBe(1);
+
+    // 3. Send prompt #2 -> agent_start -> message_end -> agent_settled
+    runner.stopped = false;
+    runner.rpc = {
+      prompt: vi.fn(async () => {}),
+      steer: vi.fn(async () => {}),
+      abort: vi.fn(async () => {}),
+      stop: vi.fn(),
+    };
+    await runner.execute({ version: 1, seq: 2, at: "a", type: "send", text: "prompt #2 follow-up" });
+    await runner.onRpc({ type: "agent_start" });
+    await runner.onRpc({
+      type: "message_end",
+      message: { role: "assistant", content: [{ type: "text", text: "prompt #2 result" }] },
+    });
+    await runner.onRpc({ type: "agent_settled" });
+
+    // Assertions
+    const state = await store.readState(id);
+    expect(state.turn).toBe(2);
+
+    const secondResult = await store.readResult(id);
+    expect(secondResult).toBeDefined();
+    expect(secondResult?.turn).toBe(2);
+    expect(secondResult?.commandSeq).toBe(2);
+    expect(secondResult?.status).toBe("completed");
+    expect(secondResult?.text).toBe("prompt #2 result");
+
+    const secondCompletion = await store.readCompletion(id);
+    expect(secondCompletion).toBeDefined();
+    expect(secondCompletion?.turn).toBe(2);
+    expect(secondCompletion?.commandSeq).toBe(2);
+    expect(secondCompletion?.status).toBe("completed");
+
+    // First failed result remains retrievable by exact turn/resultSeq
+    const retrievedFirstResult = await store.readResult(id, {
+      turn: 1,
+      resultSeq: firstResult!.resultSeq!,
+    });
+    expect(retrievedFirstResult).toBeDefined();
+    expect(retrievedFirstResult?.turn).toBe(1);
+    expect(retrievedFirstResult?.commandSeq).toBe(1);
+    expect(retrievedFirstResult?.status).toBe("failed");
+
+    runner.stopped = true;
+    if (runner.heartbeat) clearInterval(runner.heartbeat);
+    runner.monitor?.stop();
+    await runner.recordQueue;
+  });
 });

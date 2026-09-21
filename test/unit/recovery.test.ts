@@ -7,6 +7,7 @@ import { ProtocolStore } from "../../src/protocol/store.js";
 import { TmuxAdapter, type Executor } from "../../src/tmux/adapter.js";
 import { workerId } from "../../src/types.js";
 import type { WorkerEvent } from "../../src/protocol/types.js";
+import { Runner } from "../../src/runner/runner.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -368,5 +369,223 @@ describe("recovery", () => {
     const events = await store.readLog<WorkerEvent>(id, "events");
     const orphanedEvents = events.filter((e) => e.type === "orphaned");
     expect(orphanedEvents).toHaveLength(1);
+  });
+
+  describe("state/runner turn invariant across startup recovery paths", () => {
+    it("preserves turn invariant after normal restart following settled turn", async () => {
+      const root = await mkdtemp(join(tmpdir(), "pi-sa-turn-normal-"));
+      roots.push(root);
+      const store = new ProtocolStore(root);
+      const id = workerId("turn-normal");
+      await store.create(
+        {
+          version: 1,
+          id,
+          tmuxSession: `pi-sa-${id}`,
+          createdAt: "2026-01-01T00:00:00Z",
+          cwd: root,
+          launch: { task: "normal" },
+        },
+        {
+          version: 1,
+          id,
+          status: "waiting",
+          turn: 2,
+          lastCommandSeq: 2,
+          lastEventSeq: 4,
+        },
+      );
+      await store.writeResult({
+        version: 1,
+        id,
+        turn: 2,
+        commandSeq: 2,
+        resultSeq: 4,
+        eventSeq: 4,
+        status: "completed",
+        text: "turn 2 completed",
+        completedAt: "2026-01-01T00:02:00Z",
+      });
+      await store.writeCompletion({
+        version: 1,
+        kind: "turn",
+        id,
+        turn: 2,
+        commandSeq: 2,
+        resultSeq: 4,
+        status: "completed",
+        summary: "turn 2 completed",
+        hasDetails: false,
+        completedAt: "2026-01-01T00:02:00Z",
+      });
+
+      const runner = new Runner(store.dir(id)) as any;
+      runner.rpc = { start: vi.fn(), stop: vi.fn(), on: vi.fn() };
+      const runPromise = runner.run();
+      runner.stopped = true;
+      if (runner.heartbeat) clearInterval(runner.heartbeat);
+      await runPromise.catch(() => undefined);
+
+      const durableState = await store.readState(id);
+      expect(runner.currentTurn).toBe(2);
+      expect(durableState.turn).toBe(2);
+      expect(runner.currentTurn).toBe(durableState.turn);
+    });
+
+    it("preserves turn invariant after interrupted active turn", async () => {
+      const root = await mkdtemp(join(tmpdir(), "pi-sa-turn-interrupted-"));
+      roots.push(root);
+      const store = new ProtocolStore(root);
+      const id = workerId("turn-interrupted");
+      await store.create(
+        {
+          version: 1,
+          id,
+          tmuxSession: `pi-sa-${id}`,
+          createdAt: "2026-01-01T00:00:00Z",
+          cwd: root,
+          launch: { task: "active crash" },
+        },
+        {
+          version: 1,
+          id,
+          status: "running",
+          turn: 1,
+          lastCommandSeq: 1,
+          lastEventSeq: 2,
+        },
+      );
+      await store.appendCommand(id, { type: "prompt", text: "cmd 1" });
+      await store.appendEvent(id, { type: "command_ack", commandSeq: 1 });
+      await store.appendEvent(id, {
+        type: "agent_start",
+        commandSeq: 1,
+        data: { turnContext: { turn: 1, initiatingCommandSeq: 1 } },
+      });
+
+      const runner = new Runner(store.dir(id)) as any;
+      runner.rpc = { start: vi.fn(), stop: vi.fn(), on: vi.fn() };
+      const runPromise = runner.run();
+      runner.stopped = true;
+      if (runner.heartbeat) clearInterval(runner.heartbeat);
+      await runPromise.catch(() => undefined);
+
+      const durableState = await store.readState(id);
+      expect(runner.currentTurn).toBe(1);
+      expect(durableState.turn).toBe(1);
+      expect(runner.currentTurn).toBe(durableState.turn);
+    });
+
+    it("preserves turn invariant after ACKed-before-start turn", async () => {
+      const root = await mkdtemp(join(tmpdir(), "pi-sa-turn-unstarted-"));
+      roots.push(root);
+      const store = new ProtocolStore(root);
+      const id = workerId("turn-unstarted");
+      await store.create(
+        {
+          version: 1,
+          id,
+          tmuxSession: `pi-sa-${id}`,
+          createdAt: "2026-01-01T00:00:00Z",
+          cwd: root,
+          launch: { task: "unstarted crash" },
+        },
+        {
+          version: 1,
+          id,
+          status: "waiting",
+          turn: 0,
+          lastCommandSeq: 1,
+          lastEventSeq: 1,
+        },
+      );
+      await store.appendCommand(id, { type: "prompt", text: "cmd 1" });
+      await store.appendEvent(id, { type: "command_ack", commandSeq: 1 });
+
+      const runner = new Runner(store.dir(id)) as any;
+      runner.rpc = { start: vi.fn(), stop: vi.fn(), on: vi.fn() };
+      const runPromise = runner.run();
+      runner.stopped = true;
+      if (runner.heartbeat) clearInterval(runner.heartbeat);
+      await runPromise.catch(() => undefined);
+
+      const durableState = await store.readState(id);
+      expect(runner.currentTurn).toBe(1);
+      expect(durableState.turn).toBe(1);
+      expect(runner.currentTurn).toBe(durableState.turn);
+    });
+
+    it("preserves turn invariant after multiple recovered ACKed-before-start commands", async () => {
+      const root = await mkdtemp(join(tmpdir(), "pi-sa-turn-multi-"));
+      roots.push(root);
+      const store = new ProtocolStore(root);
+      const id = workerId("turn-multi");
+      await store.create(
+        {
+          version: 1,
+          id,
+          tmuxSession: `pi-sa-${id}`,
+          createdAt: "2026-01-01T00:00:00Z",
+          cwd: root,
+          launch: { task: "multi unstarted" },
+        },
+        {
+          version: 1,
+          id,
+          status: "waiting",
+          turn: 1,
+          lastCommandSeq: 3,
+          lastEventSeq: 4,
+        },
+      );
+      await store.appendCommand(id, { type: "prompt", text: "cmd 1" });
+      await store.appendCommand(id, { type: "send", text: "cmd 2" });
+      await store.appendCommand(id, { type: "send", text: "cmd 3" });
+
+      await store.appendEvent(id, { type: "command_ack", commandSeq: 1 });
+      await store.appendEvent(id, {
+        type: "agent_start",
+        commandSeq: 1,
+        data: { turnContext: { turn: 1, initiatingCommandSeq: 1 } },
+      });
+      await store.appendEvent(id, { type: "command_ack", commandSeq: 2 });
+      await store.appendEvent(id, { type: "command_ack", commandSeq: 3 });
+
+      await store.writeResult({
+        version: 1,
+        id,
+        turn: 1,
+        commandSeq: 1,
+        resultSeq: 2,
+        eventSeq: 2,
+        status: "completed",
+        text: "cmd 1 completed",
+        completedAt: "2026-01-01T00:01:00Z",
+      });
+      await store.writeCompletion({
+        version: 1,
+        kind: "turn",
+        id,
+        turn: 1,
+        commandSeq: 1,
+        resultSeq: 2,
+        status: "completed",
+        summary: "cmd 1 completed",
+        hasDetails: false,
+        completedAt: "2026-01-01T00:01:00Z",
+      });
+
+      const runner = new Runner(store.dir(id)) as any;
+      runner.rpc = { start: vi.fn(), stop: vi.fn(), on: vi.fn() };
+      const runPromise = runner.run();
+      runner.stopped = true;
+      if (runner.heartbeat) clearInterval(runner.heartbeat);
+      await runPromise.catch(() => undefined);
+
+      const durableState = await store.readState(id);
+      expect(runner.currentTurn).toBe(3);
+      expect(durableState.turn).toBe(3);
+      expect(runner.currentTurn).toBe(durableState.turn);
+    });
   });
 });

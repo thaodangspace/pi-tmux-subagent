@@ -28,9 +28,10 @@ import { reduceEvents } from "./state.js";
 const lockStorage = new AsyncLocalStorage<Set<string>>();
 
 export function completionDedupKey(c: WorkerCompletion): string {
+  const identity = c.instanceId ?? c.id;
   return c.kind === "worker"
-    ? `${c.id}:worker:${c.resultSeq}:${c.status}`
-    : `${c.id}:${c.turn}:${c.resultSeq}:${c.status}`;
+    ? `${identity}:worker:${c.resultSeq}:${c.status}`
+    : `${identity}:${c.turn}:${c.resultSeq}:${c.status}`;
 }
 
 export const DEFAULT_REGISTRY_ROOT = join(homedir(), ".pi", "tmux-subagents");
@@ -199,6 +200,12 @@ export class ProtocolStore {
     value: WorkerCompletion,
     ownerOverride?: string | null,
   ): Promise<void> {
+    if (!value.instanceId) {
+      const meta = await this.readMeta(value.id).catch(() => undefined);
+      if (meta?.instanceId) {
+        value = { ...value, instanceId: meta.instanceId };
+      }
+    }
     await mkdir(this.root, { recursive: true, mode: 0o700 });
     const lock = join(this.root, ".completions.lock");
     await this.acquire(lock);
