@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ProtocolStore } from "../../src/protocol/store.js";
+import { reduceEvents } from "../../src/protocol/state.js";
 import { workerId } from "../../src/types.js";
 
 const roots: string[] = [];
@@ -49,6 +50,35 @@ describe("protocol store", () => {
     expect((await store.readLog(id, "commands")).map((x) => x.seq)).toEqual([
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
     ]);
+  });
+
+  it("keeps concurrent event projection equivalent to a full replay", async () => {
+    const { store, id } = await fixture();
+    await Promise.all([
+      store.appendEventAndProjectState(id, { type: "rpc_started" }),
+      store.appendEventAndProjectState(id, { type: "command_ack", commandSeq: 1 }),
+      store.appendEventAndProjectState(id, {
+        type: "agent_start",
+        commandSeq: 1,
+        data: { turnContext: { initiatingCommandSeq: 1 } },
+      }),
+      store.appendEventAndProjectState(id, { type: "message_update" }),
+    ]);
+    const events = await store.readLog<any>(id, "events");
+    const replayed = reduceEvents(
+      {
+        version: 1,
+        id,
+        status: "starting",
+        turn: 0,
+        lastCommandSeq: 0,
+        lastEventSeq: 0,
+      },
+      events,
+    );
+    const cached = await store.readState(id);
+    expect(cached).toMatchObject(replayed);
+    expect(cached.lastEventSeq).toBe(events.length);
   });
 
   it("ignores only an incomplete final record when reading", async () => {
@@ -137,6 +167,33 @@ describe("protocol store", () => {
     expect(
       await new ProtocolStore(store.root).readCompletion(id),
     ).toMatchObject({ status: "failed", summary: "RPC exited", resultSeq: 9 });
+  });
+
+  it("removes stale completion dedup keys when rebuilding from the authoritative feed", async () => {
+    const { store, id } = await fixture();
+    const completion = {
+      version: 1 as const,
+      kind: "turn" as const,
+      id,
+      turn: 1,
+      commandSeq: 1,
+      resultSeq: 7,
+      status: "completed" as const,
+      summary: "done",
+      hasDetails: true,
+      completedAt: "2026-01-01T00:00:00Z",
+    };
+    await store.writeCompletion(completion);
+
+    // Simulate authoritative feed rollback/repair while the derived key cache
+    // and its old key survive.
+    await writeFile(join(store.root, "completions.jsonl"), "");
+    await rm(join(store.root, "completions.index.json"), { force: true });
+    await store.writeCompletion(completion);
+
+    const feed = await readFile(join(store.root, "completions.jsonl"), "utf8");
+    expect(feed.trim().split("\n")).toHaveLength(1);
+    expect(JSON.parse(feed).completion).toMatchObject({ resultSeq: 7 });
   });
 
   it("reads a bounded log tail without changing historical pagination", async () => {

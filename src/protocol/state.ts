@@ -51,8 +51,20 @@ export function reduceEvents(
       } else if (event.type === "agent_start") {
         next.status = "running";
         next.turn += 1;
+        const turnContext = (event.data as {
+          turnContext?: { initiatingCommandSeq?: number };
+        } | undefined)?.turnContext;
+        const initiatingCommandSeq =
+          turnContext?.initiatingCommandSeq ?? event.commandSeq;
+        next.activeTurn = {
+          turn: next.turn,
+          ...(initiatingCommandSeq !== undefined
+            ? { initiatingCommandSeq }
+            : {}),
+        };
       } else if (event.type === "agent_settled") {
         next.status = "waiting";
+        delete next.activeTurn;
       } else if (event.type === "stopped") {
         next.status = "stopped";
       } else if (event.type === "killed") {

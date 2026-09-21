@@ -234,6 +234,9 @@ export class ProtocolStore {
       }
 
       if (!index || feedSize < index.offset) {
+        // This index is a rebuildable cache. Remove it first so stale keys that
+        // are absent from the authoritative feed cannot suppress publication.
+        await rm(keysDir, { recursive: true, force: true });
         await mkdir(keysDir, { recursive: true, mode: 0o700 });
         const allEntries = await this.readCompletionFeed();
         for (const { completion: c } of allEntries) {

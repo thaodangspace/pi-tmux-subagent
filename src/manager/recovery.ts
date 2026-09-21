@@ -174,6 +174,7 @@ export class Recovery {
         const lastAgentStart = [...recentEvents].reverse().find((e) => e.type === "agent_start");
         const activeTurnRunning = state.status === "running" || state.status === "unresponsive";
         const initiatingCmdSeq =
+          state.activeTurn?.initiatingCommandSeq ??
           (lastAgentStart?.data as any)?.turnContext?.initiatingCommandSeq ??
           lastAgentStart?.commandSeq ??
           (state.lastCommandSeq > 0 ? state.lastCommandSeq : undefined);
@@ -237,7 +238,16 @@ export class Recovery {
           if (this.orphanGraceMs === 0) {
             const { event: orphaned, state: orphanedState } = await this.store.appendEventAndProjectState(id, {
               type: "orphaned",
-              data: { session, heartbeatFresh: fresh, runnerAlive, piAlive },
+              data: {
+                session,
+                heartbeatFresh: fresh,
+                runnerAlive,
+                piAlive,
+                activeTurn: activeTurnRunning,
+                ...(initiatingCmdSeq !== undefined
+                  ? { initiatingCommandSeq: initiatingCmdSeq }
+                  : {}),
+              },
             });
             state = orphanedState;
             await publishOrphanedFailure(orphaned);
@@ -249,7 +259,16 @@ export class Recovery {
         ) {
           const { event: orphaned, state: orphanedState } = await this.store.appendEventAndProjectState(id, {
             type: "orphaned",
-            data: { session, heartbeatFresh: fresh, runnerAlive, piAlive },
+            data: {
+              session,
+              heartbeatFresh: fresh,
+              runnerAlive,
+              piAlive,
+              activeTurn: activeTurnRunning,
+              ...(initiatingCmdSeq !== undefined
+                ? { initiatingCommandSeq: initiatingCmdSeq }
+                : {}),
+            },
           });
           state = orphanedState;
           await publishOrphanedFailure(orphaned);
@@ -273,23 +292,64 @@ export class Recovery {
     state: WorkerState,
     meta: WorkerMeta,
   ): Promise<void> {
-    const events = await this.store.readLogTail<WorkerEvent>(id, "events", 20).catch(() => []);
-    const terminalEvent = [...events].reverse().find(
-      (e) => e.type === "orphaned" || e.type === "failed" || e.type === "killed" || e.type === "rpc_exit",
+    // New state snapshots retain active-turn identity, keeping ordinary
+    // recovery byte-bounded. Fall back to authoritative history only for
+    // legacy snapshots or when late events pushed the terminal event out of
+    // the tail.
+    let events = await this.store
+      .readLogTail<WorkerEvent>(id, "events", 20)
+      .catch(() => []);
+    let terminalEvent = [...events].reverse().find(
+      (event) =>
+        event.type === "orphaned" ||
+        event.type === "failed" ||
+        event.type === "killed" ||
+        event.type === "rpc_exit",
     );
+    const hasStartInTail = events.some((event) => event.type === "agent_start");
+    if (!terminalEvent || (!state.activeTurn && !hasStartInTail)) {
+      events = await this.store
+        .readLog<WorkerEvent>(id, "events")
+        .catch(() => events);
+      terminalEvent = [...events].reverse().find(
+        (event) =>
+          event.type === "orphaned" ||
+          event.type === "failed" ||
+          event.type === "killed" ||
+          event.type === "rpc_exit",
+      );
+    }
     if (!terminalEvent) return;
 
-    // Check if the current turn already has a finalized result
-    const existingResult = await this.store.readResult(id).catch(() => undefined);
     const targetTurn = state.turn > 0 ? state.turn : (state.lastCommandSeq > 0 ? 1 : 0);
-    const hasTurnResult = existingResult && existingResult.turn === targetTurn;
-    const wasActiveTurn = targetTurn > 0 && !hasTurnResult;
-
-    const startBeforeTerminal = [...events]
-      .filter((e) => e.seq < terminalEvent.seq && e.type === "agent_start")
-      .pop();
+    const eventsBeforeTerminal = events.filter((event) => event.seq < terminalEvent.seq);
+    const startBeforeTerminal = [...eventsBeforeTerminal]
+      .reverse()
+      .find((event) => event.type === "agent_start");
+    const settledAfterStart = startBeforeTerminal
+      ? eventsBeforeTerminal.some(
+          (event) =>
+            event.seq > startBeforeTerminal.seq && event.type === "agent_settled",
+        )
+      : false;
+    // A previously written failed result is a projection, not evidence that the
+    // turn was idle. Preserve active-turn identity across every crash boundary.
+    const terminalData =
+      terminalEvent.data && typeof terminalEvent.data === "object"
+        ? (terminalEvent.data as {
+            activeTurn?: boolean;
+            initiatingCommandSeq?: number;
+          })
+        : undefined;
+    const wasActiveTurn =
+      targetTurn > 0 &&
+      (terminalData?.activeTurn === true ||
+        state.activeTurn?.turn === targetTurn ||
+        (startBeforeTerminal !== undefined && !settledAfterStart));
 
     const initiatingCmdSeq =
+      terminalData?.initiatingCommandSeq ??
+      state.activeTurn?.initiatingCommandSeq ??
       (startBeforeTerminal?.data as any)?.turnContext?.initiatingCommandSeq ??
       startBeforeTerminal?.commandSeq ??
       (state.lastCommandSeq > 0 ? state.lastCommandSeq : undefined);
@@ -304,6 +364,16 @@ export class Recovery {
             : "Worker failed.";
 
     const existingCompletion = await this.store.readCompletion(id).catch(() => undefined);
+    // Legacy runners could assign a result sequence independently of the
+    // terminal event. A failed turn completion is already a complete durable
+    // projection and must not be followed by a worker-lifecycle duplicate.
+    if (
+      existingCompletion?.kind !== "worker" &&
+      existingCompletion?.status === "failed" &&
+      existingCompletion.turn === targetTurn
+    ) {
+      return;
+    }
 
     if (wasActiveTurn) {
       await this.store.writeResult({
@@ -321,7 +391,9 @@ export class Recovery {
 
       const hasTurnFailureCompletion =
         existingCompletion &&
+        existingCompletion.kind !== "worker" &&
         existingCompletion.turn === targetTurn &&
+        existingCompletion.resultSeq === terminalEvent.seq &&
         existingCompletion.status === "failed";
 
       if (!hasTurnFailureCompletion) {
@@ -341,6 +413,8 @@ export class Recovery {
     } else {
       const hasTerminalCompletion =
         existingCompletion &&
+        existingCompletion.kind === "worker" &&
+        existingCompletion.resultSeq === terminalEvent.seq &&
         existingCompletion.status === "failed";
 
       if (!hasTerminalCompletion) {

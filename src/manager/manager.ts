@@ -382,10 +382,13 @@ export class Manager {
       const current = await this.store.readState(value);
       if (current.status === "killed") return current;
 
-      const recentEvents = await this.store.readLogTail<WorkerEvent>(value, "events", 20).catch(() => []);
-      const lastAgentStart = [...recentEvents].reverse().find((e) => e.type === "agent_start");
       const wasActiveTurn = current.status === "running" || current.status === "unresponsive";
+      const events = current.activeTurn
+        ? []
+        : await this.store.readLog<WorkerEvent>(value, "events").catch(() => []);
+      const lastAgentStart = [...events].reverse().find((e) => e.type === "agent_start");
       const initiatingCmdSeq =
+        current.activeTurn?.initiatingCommandSeq ??
         (lastAgentStart?.data as any)?.turnContext?.initiatingCommandSeq ??
         lastAgentStart?.commandSeq ??
         (current.lastCommandSeq > 0 ? current.lastCommandSeq : undefined);

@@ -260,6 +260,69 @@ describe("recovery", () => {
     expect(state.status).toBe("orphaned");
   });
 
+  it("rebuilds a missing turn completion after the failed result was already written", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-sa-terminal-reconcile-"));
+    roots.push(root);
+    const store = new ProtocolStore(root);
+    const id = workerId("terminal-reconcile");
+    const ownerSessionKey = "terminal-owner";
+    await store.create(
+      {
+        version: 1,
+        id,
+        ownerSessionKey,
+        tmuxSession: "pi-sa-terminal-reconcile",
+        createdAt: "2000-01-01T00:00:00Z",
+        cwd: root,
+        launch: { task: "x" },
+        runnerPid: 999999,
+      },
+      { version: 1, id, status: "starting", turn: 0, lastCommandSeq: 0, lastEventSeq: 0 },
+    );
+    await store.appendEventAndProjectState(id, { type: "rpc_started" });
+    await store.appendEventAndProjectState(id, { type: "command_ack", commandSeq: 1 });
+    await store.appendEventAndProjectState(id, {
+      type: "agent_start",
+      commandSeq: 1,
+      data: { turnContext: { initiatingCommandSeq: 1 } },
+    });
+    await store.appendEventAndProjectState(id, { type: "command_ack", commandSeq: 2 });
+    await store.appendEventAndProjectState(id, { type: "command_ack", commandSeq: 3 });
+    for (let index = 0; index < 25; index++) {
+      await store.appendEventAndProjectState(id, { type: "message_update", data: index });
+    }
+    const { event: terminal } = await store.appendEventAndProjectState(id, {
+      type: "orphaned",
+      data: { session: false, runnerAlive: false },
+    });
+    await store.writeResult({
+      version: 1,
+      id,
+      status: "failed",
+      turn: 1,
+      commandSeq: 1,
+      resultSeq: terminal.seq,
+      eventSeq: terminal.seq,
+      text: "Worker process terminated unexpectedly (orphaned)",
+      completedAt: terminal.at,
+    });
+
+    const tmux = new TmuxAdapter(
+      vi.fn<Executor>().mockResolvedValue({ code: 1, stdout: "", stderr: "" }),
+    );
+    await new Recovery(store, tmux, { orphanGraceMs: 0 }).recover(id);
+
+    const entries = await store.completions({ consumer: "audit", ownerSessionKey });
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.completion).toMatchObject({
+      kind: "turn",
+      turn: 1,
+      commandSeq: 1,
+      resultSeq: terminal.seq,
+      status: "failed",
+    });
+  });
+
   it("serializes concurrent recovery invocations via worker lock so single transition occurs", async () => {
     const root = await mkdtemp(join(tmpdir(), "pi-sa-"));
     roots.push(root);

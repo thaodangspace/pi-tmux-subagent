@@ -83,6 +83,11 @@ export interface WorkerState {
   lastEventSeq: number;
   lastEventAt?: string;
   lastEventOffset?: number;
+  /** Durable projection of the currently active turn's causal identity. */
+  activeTurn?: {
+    turn: number;
+    initiatingCommandSeq?: number;
+  };
   error?: string;
 }
 export interface WorkerResult {

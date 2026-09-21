@@ -29,6 +29,33 @@ describe("state reducer", () => {
     });
   });
 
+  it.each(["stopped", "failed", "killed"] as const)(
+    "keeps %s sticky under late settled, responsive, and start events",
+    (terminal) => {
+      const id = workerId("abc123");
+      const state = reduceEvents(
+        {
+          version: 1,
+          id,
+          status: terminal,
+          turn: 1,
+          lastCommandSeq: 1,
+          lastEventSeq: 4,
+        },
+        [
+          { version: 1, seq: 5, at: "e", type: "agent_settled" },
+          { version: 1, seq: 6, at: "f", type: "responsive" },
+          { version: 1, seq: 7, at: "g", type: "agent_start" },
+        ],
+      );
+      expect(state).toMatchObject({
+        status: terminal,
+        turn: 1,
+        lastEventSeq: 7,
+      });
+    },
+  );
+
   it("does not revive orphaned worker on ordinary rpc_started event", () => {
     const id = workerId("abc123");
     const state = reduceEvents(
